@@ -13,6 +13,7 @@ import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { ShopScopeGuard } from './common/guards/shop-scope.guard';
+import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
 
 /**
@@ -53,6 +54,7 @@ import { HealthModule } from './modules/health/health.module';
     PrismaModule,
     CommonModule,
     HealthModule,
+    AuthModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
