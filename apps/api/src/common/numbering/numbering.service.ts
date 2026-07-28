@@ -86,16 +86,17 @@ export class NumberingService {
   ): Promise<string> {
     const date = params.date ?? new Date();
     const financialYear = financialYearLabel(date);
-    const shopId = params.shopId ?? null;
+    // '' is the organization-wide series. See the note on NumberSequence.shopId.
+    const shopId = params.shopId ?? '';
 
-    // `upsert` on the composite unique key, then an atomic `increment`. Postgres takes a
-    // row lock for the duration of the enclosing transaction, so concurrent billing at
-    // two counters serialises here rather than colliding.
+    // Look up the counter, then increment it atomically. Postgres holds the row lock for
+    // the duration of the enclosing transaction, so concurrent billing at two counters
+    // serialises here rather than colliding.
     const existing = await tx.numberSequence.findUnique({
       where: {
         organizationId_shopId_documentType_financialYear: {
           organizationId: params.organizationId,
-          shopId: shopId as string,
+          shopId,
           documentType: params.documentType,
           financialYear,
         },
@@ -151,7 +152,7 @@ export class NumberingService {
       where: {
         organizationId_shopId_documentType_financialYear: {
           organizationId: params.organizationId,
-          shopId: (params.shopId ?? null) as string,
+          shopId: params.shopId ?? '',
           documentType: params.documentType,
           financialYear,
         },

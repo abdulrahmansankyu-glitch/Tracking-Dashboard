@@ -630,7 +630,11 @@ model Setting {
 model NumberSequence {
   id             String @id @default(cuid())
   organizationId String
-  shopId         String?
+  /// Empty string means an organization-wide series (suppliers, customers, employees).
+  /// Deliberately NOT nullable: Postgres treats NULLs as distinct in a unique index, so
+  /// a nullable column would let two rows share the same series and hand out duplicate
+  /// invoice numbers — and Prisma cannot look up a compound unique key containing NULL.
+  shopId         String @default("")
   /// "SALES_INVOICE", "PURCHASE_ORDER", ...
   documentType   String
   financialYear  String

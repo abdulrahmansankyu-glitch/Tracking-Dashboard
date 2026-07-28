@@ -14,7 +14,10 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { ShopScopeGuard } from './common/guards/shop-scope.guard';
 import { AuthModule } from './modules/auth/auth.module';
+import { CustomersModule } from './modules/customers/customers.module';
 import { HealthModule } from './modules/health/health.module';
+import { ProductsModule } from './modules/products/products.module';
+import { SuppliersModule } from './modules/suppliers/suppliers.module';
 
 /**
  * Application root.
@@ -55,6 +58,9 @@ import { HealthModule } from './modules/health/health.module';
     CommonModule,
     HealthModule,
     AuthModule,
+    SuppliersModule,
+    ProductsModule,
+    CustomersModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

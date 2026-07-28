@@ -13,6 +13,10 @@
     "outDir": "./dist",
     "baseUrl": "./",
     "incremental": true,
+    // Must live inside outDir: `nest build` deletes dist but would leave a stray
+    // tsbuildinfo behind, and TypeScript would then skip re-emitting files it believes
+    // are already built — producing a dist missing most of the application.
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "skipLibCheck": true,
     "strict": true,
     "strictNullChecks": true,

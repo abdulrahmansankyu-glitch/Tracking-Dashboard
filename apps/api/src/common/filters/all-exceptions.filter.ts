@@ -34,7 +34,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
         exception instanceof Error ? exception.stack : undefined,
       );
     } else {
-      this.logger.warn(`${request.method} ${request.url} → ${status}: ${message}`);
+      // The client gets a sanitised message, but the server log must keep the real
+      // reason — a masked "did not match what the database expects" is impossible to
+      // debug from the outside.
+      const cause =
+        exception instanceof Prisma.PrismaClientValidationError ||
+        exception instanceof Prisma.PrismaClientKnownRequestError
+          ? ` | ${exception.message.replace(/\s+/g, ' ').slice(0, 600)}`
+          : '';
+      this.logger.warn(`${request.method} ${request.url} → ${status}: ${message}${cause}`);
     }
 
     response.status(status).json({
@@ -65,7 +73,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
         status: exception.getStatus(),
         message: Array.isArray(rawMessage) ? rawMessage.join('; ') : String(rawMessage ?? exception.message),
         error: record.error as string | undefined,
-        details: this.groupValidationMessages(rawMessage),
+        // ZodValidationPipe already supplies field-keyed details; only fall back to
+        // parsing class-validator's flat string array when it has not.
+        details:
+          (record.details as Record<string, string[]> | undefined) ??
+          this.groupValidationMessages(rawMessage),
       };
     }
 

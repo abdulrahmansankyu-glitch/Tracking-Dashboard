@@ -18,11 +18,13 @@
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
     "test:e2e": "pnpm --filter @intoto/api test:e2e",
-    "db:generate": "pnpm --filter @intoto/api db:generate",
-    "db:migrate": "pnpm --filter @intoto/api db:migrate",
-    "db:push": "pnpm --filter @intoto/api db:push",
+    "_comment_db": "Prisma resolves .env from the working directory, so these run from the repo root against the single root .env rather than needing a copy inside apps/api.",
+    "db:generate": "prisma generate --schema apps/api/prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema apps/api/prisma/schema.prisma",
+    "db:migrate:deploy": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:push": "prisma db push --schema apps/api/prisma/schema.prisma",
     "db:seed": "pnpm --filter @intoto/api db:seed",
-    "db:studio": "pnpm --filter @intoto/api db:studio",
+    "db:studio": "prisma studio --schema apps/api/prisma/schema.prisma",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
@@ -32,6 +34,7 @@
     "@types/node": "^22.10.2",
     "playwright": "^1.62.0",
     "prettier": "^3.4.2",
+    "prisma": "6.19.3",
     "typescript": "^5.7.2"
   }
 }

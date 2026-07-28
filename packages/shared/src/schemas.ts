@@ -208,7 +208,14 @@ export const supplierSchema = z.object({
 // Product
 // ---------------------------------------------------------------------------
 
-export const productSchema = z.object({
+/**
+ * Product fields without cross-field rules.
+ *
+ * Exported separately because `productSchema` below adds `.refine()` calls, which turn
+ * it into a ZodEffects — and ZodEffects has no `.partial()`. PATCH endpoints and
+ * partially-filled forms need the plain object to derive from.
+ */
+export const productBaseSchema = z.object({
   sku: z.string().trim().min(1, 'SKU is required').max(50).regex(/^[A-Za-z0-9._/-]+$/, 'SKU may contain letters, numbers . _ / -'),
   barcode: z.string().trim().max(50).optional().or(z.literal('')),
   name: z.string().trim().min(2, 'Product name is required').max(250),
@@ -253,7 +260,9 @@ export const productSchema = z.object({
   trackSerial: z.boolean().default(false),
 
   isActive: z.boolean().default(true),
-})
+});
+
+export const productSchema = productBaseSchema
   .refine((v) => v.mrp === 0 || v.sellingPrice <= v.mrp, {
     message: 'Selling price cannot exceed MRP — this is a legal requirement, not just a warning',
     path: ['sellingPrice'],
