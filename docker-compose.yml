@@ -1,0 +1,108 @@
+name: intoto-erp
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: intoto-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-intoto}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-intoto_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-intoto_erp}
+      # India-first defaults
+      TZ: Asia/Kolkata
+      PGTZ: Asia/Kolkata
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-intoto} -d ${POSTGRES_DB:-intoto_erp}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [intoto]
+
+  redis:
+    image: redis:7-alpine
+    container_name: intoto-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [intoto]
+
+  # S3-compatible object storage for documents/invoices/product media.
+  # In production this is replaced by real AWS S3 (same API).
+  minio:
+    image: minio/minio:latest
+    container_name: intoto-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-intoto}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-intoto_dev_password}
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [intoto]
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    container_name: intoto-api
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-intoto}:${POSTGRES_PASSWORD:-intoto_dev_password}@postgres:5432/${POSTGRES_DB:-intoto_erp}?schema=public
+      REDIS_URL: redis://redis:6379
+      API_PORT: 4000
+    env_file: [.env]
+    ports:
+      - '${API_PORT:-4000}:4000'
+    networks: [intoto]
+    profiles: [full]
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+    container_name: intoto-web
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: http://localhost:4000/api/v1
+    env_file: [.env]
+    ports:
+      - '3000:3000'
+    networks: [intoto]
+    profiles: [full]
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+networks:
+  intoto:
+    driver: bridge

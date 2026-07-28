@@ -1,0 +1,3242 @@
+// ============================================================================
+//  INTOTO ERP — DATABASE SCHEMA
+//  PostgreSQL 16 · Prisma 6
+//
+//  Conventions used throughout:
+//
+//  1. MULTI-TENANCY. Every business table carries `organizationId`. Intoto is one
+//     organization today, but scoping from day one is what makes "unlimited shops"
+//     and a future multi-company/franchise model a configuration change rather than
+//     a rewrite. Every query in the API is scoped by the tenant guard.
+//
+//  2. MONEY. Stored as Decimal(18, 4) — exact, never float. Four decimal places
+//     because per-unit fabric rates and tax fractions need sub-paise precision before
+//     the line total is rounded. The API converts to integer paise for arithmetic.
+//
+//  3. QUANTITY. Decimal(18, 3) — fabric sells in fractional metres.
+//
+//  4. DELETE vs ARCHIVE. `deletedAt` = soft delete (hidden, recoverable by admin).
+//     `archivedAt` = deliberately retired but still referenced by history. The spec
+//     asks for both and they mean different things to an accountant.
+//
+//  5. IMMUTABLE LEDGERS. StockMovement and JournalLine are append-only. Corrections
+//     are new reversing rows, never updates. This is what makes the audit trail and
+//     the trial balance trustworthy.
+//
+//  6. AUDIT. Every mutation writes an AuditLog row via a global interceptor.
+// ============================================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+//  ENUMS
+// ============================================================================
+
+enum ShopType {
+  RETAIL
+  WHOLESALE
+  BOTH
+  WAREHOUSE
+}
+
+enum RoleName {
+  OWNER
+  ADMIN
+  MANAGER
+  ACCOUNTANT
+  CASHIER
+  SALES_STAFF
+  WAREHOUSE_STAFF
+  AUDITOR
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  LOCKED
+}
+
+enum DocumentStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PARTIALLY_FULFILLED
+  FULFILLED
+  COMPLETED
+  CANCELLED
+  VOID
+}
+
+enum PaymentStatus {
+  UNPAID
+  PARTIAL
+  PAID
+  OVERDUE
+  REFUNDED
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  CARD_DEBIT
+  CARD_CREDIT
+  NET_BANKING
+  CHEQUE
+  BANK_TRANSFER
+  WALLET
+  GIFT_CARD
+  STORE_CREDIT
+  CREDIT
+}
+
+enum PaymentDirection {
+  INBOUND // money received (from customers)
+  OUTBOUND // money paid (to suppliers, staff, expenses)
+}
+
+enum CustomerType {
+  RETAIL
+  WHOLESALE
+  VIP
+  REGULAR
+  CORPORATE
+}
+
+enum SupplyType {
+  INTRA_STATE
+  INTER_STATE
+  EXPORT
+  SEZ
+}
+
+enum ValuationMethod {
+  FIFO
+  LIFO
+  WEIGHTED_AVERAGE
+}
+
+enum StockMovementType {
+  OPENING
+  PURCHASE
+  PURCHASE_RETURN
+  SALE
+  SALES_RETURN
+  TRANSFER_OUT
+  TRANSFER_IN
+  ADJUSTMENT_INCREASE
+  ADJUSTMENT_DECREASE
+  DAMAGED
+  LOST
+  CYCLE_COUNT
+  PRODUCTION
+}
+
+enum AdjustmentReason {
+  DAMAGED
+  LOST
+  THEFT
+  EXPIRED
+  COUNT_CORRECTION
+  SAMPLE
+  GIFT
+  OTHER
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+enum JournalSource {
+  SALES_INVOICE
+  SALES_RETURN
+  PURCHASE_BILL
+  PURCHASE_RETURN
+  PAYMENT
+  RECEIPT
+  EXPENSE
+  PAYROLL
+  STOCK_ADJUSTMENT
+  DEPRECIATION
+  MANUAL
+  OPENING_BALANCE
+  CONTRA
+}
+
+enum Season {
+  ALL_SEASON
+  SUMMER
+  MONSOON
+  WINTER
+  FESTIVE
+  WEDDING
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  HALF_DAY
+  LEAVE
+  HOLIDAY
+  WEEK_OFF
+  LATE
+}
+
+enum LeaveType {
+  CASUAL
+  SICK
+  EARNED
+  UNPAID
+  MATERNITY
+  PATERNITY
+  FESTIVAL
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  ARCHIVE
+  RESTORE
+  LOGIN
+  LOGOUT
+  LOGIN_FAILED
+  PASSWORD_CHANGE
+  TWO_FACTOR_ENABLED
+  TWO_FACTOR_DISABLED
+  EXPORT
+  IMPORT
+  PRINT
+  APPROVE
+  REJECT
+  VOID
+  PAYMENT
+  PERMISSION_CHANGE
+  VIEW_SENSITIVE
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  WHATSAPP
+  PUSH
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum RecurrenceInterval {
+  DAILY
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+enum GstReturnType {
+  GSTR1
+  GSTR3B
+  GSTR9
+  CMP08
+}
+
+enum FilingStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  READY
+  FILED
+  ACKNOWLEDGED
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+enum AiInsightKind {
+  SALES_FORECAST
+  DEMAND_FORECAST
+  DEAD_STOCK
+  REORDER
+  PRICE_OPTIMISATION
+  SUPPLIER_RECOMMENDATION
+  CUSTOMER_RECOMMENDATION
+  FRAUD_ALERT
+  PROFIT_OPPORTUNITY
+  GENERAL_ADVICE
+}
+
+// ============================================================================
+//  SECTION 1 — ORGANIZATION, SHOPS, USERS, SECURITY
+// ============================================================================
+
+/// The tenant. One row per business. Holds the legal identity used on invoices.
+model Organization {
+  id           String  @id @default(cuid())
+  name         String
+  legalName    String?
+  gstin        String? @unique
+  pan          String?
+  cin          String?
+  logoUrl      String?
+  email        String?
+  phone        String?
+  website      String?
+
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  district     String?
+  stateCode    String?
+  pincode      String?
+  country      String  @default("IN")
+
+  currency         String          @default("INR")
+  timezone         String          @default("Asia/Kolkata")
+  financialYearStartMonth Int      @default(4)
+  valuationMethod  ValuationMethod @default(WEIGHTED_AVERAGE)
+
+  /// Free-form tenant settings (feature flags, invoice terms, print templates)
+  settings Json @default("{}")
+
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  shops             Shop[]
+  users             User[]
+  suppliers         Supplier[]
+  customers         Customer[]
+  products          Product[]
+  categories        Category[]
+  brands            Brand[]
+  accounts          Account[]
+  journalEntries    JournalEntry[]
+  auditLogs         AuditLog[]
+  settingsEntries   Setting[]
+  numberSequences   NumberSequence[]
+  expenseCategories ExpenseCategory[]
+  notifications     Notification[]
+  documents         Document[]
+  aiConversations   AiConversation[]
+  aiInsights        AiInsight[]
+  importJobs        ImportJob[]
+  gstReturns        GstReturn[]
+  coupons           Coupon[]
+  giftCards         GiftCard[]
+  fixedAssets       FixedAsset[]
+  bankAccounts      BankAccount[]
+  paymentVouchers   PaymentVoucher[]
+
+  @@index([deletedAt])
+  @@map("organizations")
+}
+
+/// A physical branch or warehouse. Adding shop #4 through #400 is an INSERT here —
+/// no schema change, no code change. That is the scalability requirement.
+model Shop {
+  id             String   @id @default(cuid())
+  organizationId String
+  code           String
+  name           String
+  legalName      String?
+  type           ShopType @default(BOTH)
+
+  /// A shop may hold its own GSTIN (separate registration per state) or inherit the
+  /// organization's. This drives CGST/SGST vs IGST on every invoice it issues.
+  gstin     String?
+  pan       String?
+  phone     String?
+  email     String?
+
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  district     String?
+  stateCode    String  @default("09")
+  pincode      String?
+  country      String  @default("IN")
+
+  managerId   String?
+  openingDate DateTime?
+
+  /// Fixed monthly overheads, used by the shop P&L and the AI break-even advisor
+  monthlyRent      Decimal? @db.Decimal(18, 4)
+  monthlyInsurance Decimal? @db.Decimal(18, 4)
+  areaSqft         Int?
+
+  /// Document numbering, e.g. "INV" → INTOTO/SHOP1/INV/2025-26/00001
+  invoicePrefix  String @default("INV")
+  sequencePrefix String?
+
+  /// 3D shop visualisation: floor footprint in metres and a rack layout definition
+  floorWidth  Decimal? @db.Decimal(8, 2)
+  floorDepth  Decimal? @db.Decimal(8, 2)
+  floorPlan   Json?
+
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  archivedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  manager      Employee?    @relation("ShopManager", fields: [managerId], references: [id], onDelete: SetNull)
+
+  userAccess        UserShop[]
+  employees         Employee[]         @relation("EmployeeShop")
+  stockItems        StockItem[]
+  stockMovements    StockMovement[]
+  stockBatches      StockBatch[]
+  salesInvoices     SalesInvoice[]
+  salesReturns      SalesReturn[]
+  purchaseOrders    PurchaseOrder[]
+  goodsReceipts     GoodsReceipt[]
+  purchaseBills     PurchaseBill[]
+  purchaseReturns   PurchaseReturn[]
+  expenses          Expense[]
+  transfersOut      StockTransfer[]    @relation("TransferFrom")
+  transfersIn       StockTransfer[]    @relation("TransferTo")
+  stockAdjustments  StockAdjustment[]
+  cycleCounts       CycleCount[]
+  posSessions       PosSession[]
+  journalEntries    JournalEntry[]
+  cashRegisters     CashRegisterDay[]
+  productAllocations ProductShopAllocation[]
+  fixedAssets       FixedAsset[]
+  recurringExpenses RecurringExpense[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, isActive])
+  @@index([organizationId, deletedAt])
+  @@map("shops")
+}
+
+/// A login. Distinct from Employee: not every employee gets system access, and some
+/// users (the owner's CA, for example) are not employees.
+model User {
+  id             String     @id @default(cuid())
+  organizationId String
+  name           String
+  email          String
+  phone          String?
+  passwordHash   String
+  avatarUrl      String?
+  status         UserStatus @default(ACTIVE)
+
+  /// TOTP two-factor. Secret is encrypted at rest by the application layer.
+  twoFactorEnabled  Boolean  @default(false)
+  twoFactorSecret   String?
+  twoFactorBackupCodes String[] @default([])
+
+  /// Explicit permission overrides layered on top of role bundles.
+  extraPermissions String[] @default([])
+  deniedPermissions String[] @default([])
+
+  lastLoginAt      DateTime?
+  lastLoginIp      String?
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+  passwordChangedAt DateTime?
+  mustChangePassword Boolean  @default(false)
+
+  /// UI preferences: theme, dashboard layout, language, pinned shops
+  preferences Json @default("{}")
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  roles          UserRole[]
+  shopAccess     UserShop[]
+  refreshTokens  RefreshToken[]
+  auditLogs      AuditLog[]
+  employee       Employee?
+  notifications  Notification[]
+  aiConversations AiConversation[]
+  dashboardLayouts DashboardLayout[]
+  posSessions    PosSession[]
+  importJobs     ImportJob[]
+
+  @@unique([organizationId, email])
+  @@index([organizationId, status])
+  @@index([email])
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        RoleName
+  label       String
+  description String?
+  /// Permission strings ("product:create"). Seeded from packages/shared/src/rbac.ts
+  /// so the matrix has exactly one definition.
+  permissions String[] @default([])
+  isSystem    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users UserRole[]
+
+  @@unique([name])
+  @@map("roles")
+}
+
+model UserRole {
+  id         String   @id @default(cuid())
+  userId     String
+  roleId     String
+  assignedAt DateTime @default(now())
+  assignedBy String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+/// Which shops a user may act on. An empty set means "all shops in the organization",
+/// which is how OWNER and ADMIN work.
+model UserShop {
+  id        String   @id @default(cuid())
+  userId    String
+  shopId    String
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, shopId])
+  @@index([shopId])
+  @@map("user_shops")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  /// SHA-256 of the token. The raw value never touches the database.
+  tokenHash String    @unique
+  userAgent String?
+  ipAddress String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+/// Append-only audit trail. Every create/update/delete in the system lands here with
+/// a field-level diff, satisfying "Every change must be recorded in Activity Logs".
+model AuditLog {
+  id             String      @id @default(cuid())
+  organizationId String
+  userId         String?
+  userName       String?
+  action         AuditAction
+  /// Table/model name, e.g. "SalesInvoice"
+  entityType     String
+  entityId       String?
+  /// Human-readable subject, e.g. "INV/SHOP1/2025-26/00042"
+  entityLabel    String?
+  shopId         String?
+
+  /// Field-level diff: [{ field, from, to }]
+  changes    Json?
+  /// Full snapshot before the change, for restore
+  beforeData Json?
+
+  ipAddress     String?
+  userAgent     String?
+  correlationId String?
+  /// Why: supplied by the user for sensitive actions (void, price override)
+  reason        String?
+
+  createdAt DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, entityType, entityId])
+  @@index([organizationId, createdAt])
+  @@index([userId, createdAt])
+  @@index([shopId, createdAt])
+  @@map("audit_logs")
+}
+
+/// Key/value configuration, scoped organization-wide or per shop.
+model Setting {
+  id             String   @id @default(cuid())
+  organizationId String
+  shopId         String?
+  key            String
+  value          Json
+  description    String?
+  updatedAt      DateTime @updatedAt
+  updatedById    String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, shopId, key])
+  @@map("settings")
+}
+
+/// Gap-free document numbering per shop, per document type, per financial year.
+/// GST requires invoice series to be sequential and unbroken.
+model NumberSequence {
+  id             String @id @default(cuid())
+  organizationId String
+  shopId         String?
+  /// "SALES_INVOICE", "PURCHASE_ORDER", ...
+  documentType   String
+  financialYear  String
+  prefix         String
+  /// Last number issued. Incremented inside the same transaction as the document.
+  lastNumber     Int    @default(0)
+  padding        Int    @default(5)
+
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, shopId, documentType, financialYear])
+  @@map("number_sequences")
+}
+
+// ============================================================================
+//  SECTION 2 — MASTER DATA
+// ============================================================================
+
+/// Self-referencing category tree: Fabric → Cotton Rolls, Sarees → Banarasi Saree.
+model Category {
+  id             String  @id @default(cuid())
+  organizationId String
+  parentId       String?
+  name           String
+  slug           String
+  description    String?
+  imageUrl       String?
+  /// Default HSN/GST for products created under this category
+  defaultHsnCode String?
+  defaultGstRate Decimal? @db.Decimal(5, 2)
+  displayOrder   Int      @default(0)
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  parent       Category?    @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children     Category[]   @relation("CategoryTree")
+
+  products          Product[] @relation("ProductCategory")
+  subCategoryProducts Product[] @relation("ProductSubCategory")
+
+  @@unique([organizationId, slug])
+  @@index([organizationId, parentId])
+  @@map("categories")
+}
+
+model Brand {
+  id             String  @id @default(cuid())
+  organizationId String
+  name           String
+  slug           String
+  logoUrl        String?
+  description    String?
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  products     Product[]
+
+  @@unique([organizationId, slug])
+  @@map("brands")
+}
+
+/// HSN master with the value-dependent textile slabs. Mirrors the reference table in
+/// packages/shared so tax rules can be corrected by an accountant without a deploy.
+model HsnCode {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  description String
+  gstRate     Decimal  @db.Decimal(5, 2)
+  /// Per-unit value above which `rateAbove` applies (₹1,000 for most apparel)
+  thresholdAmount Decimal? @db.Decimal(18, 4)
+  rateAbove       Decimal? @db.Decimal(5, 2)
+  cessRate        Decimal  @default(0) @db.Decimal(5, 2)
+  category        String?
+  effectiveFrom   DateTime @default(now())
+  effectiveTo     DateTime?
+  isActive        Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([code, isActive])
+  @@map("hsn_codes")
+}
+
+/// GST Unique Quantity Codes — required on e-invoices and in GSTR-1.
+model UnitOfMeasure {
+  id        String  @id @default(cuid())
+  code      String  @unique
+  name      String
+  uqc       String
+  decimals  Int     @default(2)
+  isActive  Boolean @default(true)
+
+  products Product[]
+
+  @@map("units_of_measure")
+}
+
+// ============================================================================
+//  SECTION 3 — SUPPLIERS
+// ============================================================================
+
+model Supplier {
+  id             String  @id @default(cuid())
+  organizationId String
+  code           String
+  companyName    String
+  ownerName      String?
+  gstin          String?
+  pan            String?
+  phone          String
+  alternatePhone String?
+  email          String?
+  website        String?
+
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  district     String?
+  stateCode    String?
+  pincode      String?
+  country      String  @default("IN")
+
+  /// Bank details are encrypted at rest (application-level AES-GCM) because they are
+  /// the highest-value target in the database.
+  bankAccountHolder String?
+  bankAccountNumber String?
+  bankIfsc          String?
+  bankName          String?
+  bankBranch        String?
+  upiId             String?
+
+  creditPeriodDays Int      @default(0)
+  creditLimit      Decimal? @db.Decimal(18, 4)
+  /// Positive = we owe the supplier
+  openingBalance   Decimal  @default(0) @db.Decimal(18, 4)
+
+  category String?
+  notes    String?
+
+  /// Rolling performance metrics, recomputed nightly by the analytics job.
+  /// Denormalised deliberately: the supplier list must sort by rating without
+  /// aggregating millions of purchase lines on every page load.
+  qualityRating       Decimal @default(0) @db.Decimal(3, 2)
+  deliveryRating      Decimal @default(0) @db.Decimal(3, 2)
+  priceRating         Decimal @default(0) @db.Decimal(3, 2)
+  overallRating       Decimal @default(0) @db.Decimal(3, 2)
+  lateDeliveryPercent Decimal @default(0) @db.Decimal(5, 2)
+  defectPercent       Decimal @default(0) @db.Decimal(5, 2)
+  avgLeadTimeDays     Decimal @default(0) @db.Decimal(6, 2)
+  totalPurchaseValue  Decimal @default(0) @db.Decimal(18, 4)
+  totalProfitGenerated Decimal @default(0) @db.Decimal(18, 4)
+  outstandingAmount   Decimal @default(0) @db.Decimal(18, 4)
+  metricsUpdatedAt    DateTime?
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+  createdById String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  products        Product[]
+  purchaseOrders  PurchaseOrder[]
+  goodsReceipts   GoodsReceipt[]
+  purchaseBills   PurchaseBill[]
+  purchaseReturns PurchaseReturn[]
+  payments        PaymentVoucher[]
+  documents       Document[]
+  ratings         SupplierRatingEntry[]
+  requisitions    PurchaseRequisition[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, isActive, deletedAt])
+  @@index([organizationId, companyName])
+  @@index([gstin])
+  @@map("suppliers")
+}
+
+/// Per-delivery scorecard. The rolling averages on Supplier are derived from these,
+/// so a rating is always traceable to the deliveries that produced it.
+model SupplierRatingEntry {
+  id             String   @id @default(cuid())
+  supplierId     String
+  goodsReceiptId String?
+  ratingDate     DateTime @default(now())
+  qualityScore   Int      // 1..5
+  deliveryScore  Int      // 1..5
+  priceScore     Int      // 1..5
+  /// Days late (negative = early)
+  delayDays      Int      @default(0)
+  defectQuantity Decimal  @default(0) @db.Decimal(18, 3)
+  totalQuantity  Decimal  @default(0) @db.Decimal(18, 3)
+  comments       String?
+  ratedById      String?
+  createdAt      DateTime @default(now())
+
+  supplier     Supplier      @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  goodsReceipt GoodsReceipt? @relation(fields: [goodsReceiptId], references: [id], onDelete: SetNull)
+
+  @@index([supplierId, ratingDate])
+  @@map("supplier_rating_entries")
+}
+
+// ============================================================================
+//  SECTION 4 — PRODUCTS
+// ============================================================================
+
+model Product {
+  id             String  @id @default(cuid())
+  organizationId String
+  sku            String
+  barcode        String?
+  name           String
+  description    String?
+
+  categoryId    String
+  subCategoryId String?
+  brandId       String?
+  supplierId    String?
+  unitId        String?
+
+  hsnCode String?
+  gstRate Decimal @default(5) @db.Decimal(5, 2)
+  cessRate Decimal @default(0) @db.Decimal(5, 2)
+
+  // --- Textile attributes ---
+  colour      String?
+  design      String?
+  pattern     String?
+  material    String?
+  fabric      String?
+  size        String?
+  lengthMtr   Decimal? @db.Decimal(10, 3)
+  widthInch   Decimal? @db.Decimal(10, 3)
+  weightGrams Decimal? @db.Decimal(10, 3)
+  season      Season   @default(ALL_SEASON)
+  collection  String?
+
+  // --- Pricing ---
+  purchaseCost   Decimal @default(0) @db.Decimal(18, 4)
+  sellingPrice   Decimal @default(0) @db.Decimal(18, 4)
+  wholesalePrice Decimal? @db.Decimal(18, 4)
+  mrp            Decimal @default(0) @db.Decimal(18, 4)
+  /// Retail prices in India are normally quoted inclusive of GST
+  priceIncludesTax Boolean @default(true)
+  discountPercent  Decimal @default(0) @db.Decimal(5, 2)
+
+  // --- Stock policy (organization-wide defaults; per-shop overrides live in
+  //     ProductShopAllocation) ---
+  minStock        Decimal  @default(0) @db.Decimal(18, 3)
+  maxStock        Decimal? @db.Decimal(18, 3)
+  reorderQuantity Decimal? @db.Decimal(18, 3)
+  shelfLocation   String?
+  expiryDate      DateTime?
+  trackSerial     Boolean  @default(false)
+  hasVariants     Boolean  @default(false)
+
+  // --- Media ---
+  primaryImageUrl String?
+  videoUrl        String?
+  /// URL of a glTF/GLB asset powering the 3D product view
+  model3dUrl      String?
+  qrCodeUrl       String?
+
+  /// Denormalised roll-up across all shops. Kept in step with StockMovement inside the
+  /// same transaction; the nightly reconciliation job re-derives it from the ledger
+  /// and alarms on any drift.
+  totalStock      Decimal @default(0) @db.Decimal(18, 3)
+  /// Weighted average cost across all shops, maintained on every inbound movement
+  avgCost         Decimal @default(0) @db.Decimal(18, 4)
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+  createdById String?
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  category     Category       @relation("ProductCategory", fields: [categoryId], references: [id])
+  subCategory  Category?      @relation("ProductSubCategory", fields: [subCategoryId], references: [id], onDelete: SetNull)
+  brand        Brand?         @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  supplier     Supplier?      @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  unit         UnitOfMeasure? @relation(fields: [unitId], references: [id], onDelete: SetNull)
+
+  variants          ProductVariant[]
+  images            ProductImage[]
+  barcodes          ProductBarcode[]
+  priceHistory      PriceHistory[]
+  allocations       ProductShopAllocation[]
+  stockItems        StockItem[]
+  stockMovements    StockMovement[]
+  stockBatches      StockBatch[]
+  salesLines        SalesInvoiceLine[]
+  salesReturnLines  SalesReturnLine[]
+  purchaseOrderLines PurchaseOrderLine[]
+  goodsReceiptLines GoodsReceiptLine[]
+  purchaseBillLines PurchaseBillLine[]
+  purchaseReturnLines PurchaseReturnLine[]
+  transferLines     StockTransferLine[]
+  adjustmentLines   StockAdjustmentLine[]
+  cycleCountLines   CycleCountLine[]
+  requisitionLines  PurchaseRequisitionLine[]
+
+  @@unique([organizationId, sku])
+  @@index([organizationId, isActive, deletedAt])
+  @@index([organizationId, categoryId])
+  @@index([organizationId, supplierId])
+  @@index([organizationId, brandId])
+  @@index([barcode])
+  @@index([organizationId, name])
+  @@map("products")
+}
+
+/// Size/colour matrix. A "Cotton Kurta" is one Product with variants for each
+/// size × colour, each holding its own stock and barcode.
+model ProductVariant {
+  id        String  @id @default(cuid())
+  productId String
+  sku       String
+  barcode   String?
+  name      String
+
+  colour String?
+  size   String?
+  design String?
+
+  /// Null = inherit from the parent product
+  purchaseCost Decimal? @db.Decimal(18, 4)
+  sellingPrice Decimal? @db.Decimal(18, 4)
+  mrp          Decimal? @db.Decimal(18, 4)
+
+  imageUrl   String?
+  totalStock Decimal @default(0) @db.Decimal(18, 3)
+  minStock   Decimal @default(0) @db.Decimal(18, 3)
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  stockItems         StockItem[]
+  stockMovements     StockMovement[]
+  stockBatches       StockBatch[]
+  salesLines         SalesInvoiceLine[]
+  salesReturnLines   SalesReturnLine[]
+  purchaseOrderLines PurchaseOrderLine[]
+  goodsReceiptLines  GoodsReceiptLine[]
+  purchaseBillLines  PurchaseBillLine[]
+  purchaseReturnLines PurchaseReturnLine[]
+  transferLines      StockTransferLine[]
+  adjustmentLines    StockAdjustmentLine[]
+  cycleCountLines    CycleCountLine[]
+
+  @@unique([sku])
+  @@index([productId, isActive])
+  @@index([barcode])
+  @@map("product_variants")
+}
+
+model ProductImage {
+  id           String  @id @default(cuid())
+  productId    String
+  url          String
+  thumbnailUrl String?
+  altText      String?
+  displayOrder Int     @default(0)
+  isPrimary    Boolean @default(false)
+  /// Marks a 360° spin frame used by the 3D product viewer
+  is360Frame   Boolean @default(false)
+  createdAt    DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, displayOrder])
+  @@map("product_images")
+}
+
+/// A product can carry several barcodes: the manufacturer's EAN, an internally
+/// printed code, and a wholesale carton code all scan to the same item.
+model ProductBarcode {
+  id        String  @id @default(cuid())
+  productId String
+  barcode   String  @unique
+  type      String  @default("EAN13")
+  label     String?
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("product_barcodes")
+}
+
+/// Every price change is retained: margin analysis and "why was this sold at ₹450?"
+/// both depend on knowing the price that was live on a given date.
+model PriceHistory {
+  id           String   @id @default(cuid())
+  productId    String
+  field        String   // "sellingPrice" | "purchaseCost" | "mrp" | "wholesalePrice"
+  oldValue     Decimal  @db.Decimal(18, 4)
+  newValue     Decimal  @db.Decimal(18, 4)
+  reason       String?
+  changedById  String?
+  effectiveFrom DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, effectiveFrom])
+  @@map("price_history")
+}
+
+/// Per-shop stock policy and shelf location. Shop 1 near the wedding market keeps
+/// 40 sherwanis; shop 3 keeps 5. Same product, different policy.
+model ProductShopAllocation {
+  id            String   @id @default(cuid())
+  productId     String
+  shopId        String
+  minStock      Decimal  @default(0) @db.Decimal(18, 3)
+  maxStock      Decimal? @db.Decimal(18, 3)
+  reorderQuantity Decimal? @db.Decimal(18, 3)
+  shelfLocation String?
+  /// Shop-specific price override (a mall outlet may price above a street shop)
+  sellingPrice  Decimal? @db.Decimal(18, 4)
+  isStocked     Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  shop    Shop    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, shopId])
+  @@index([shopId])
+  @@map("product_shop_allocations")
+}
+
+// ============================================================================
+//  SECTION 5 — INVENTORY
+// ============================================================================
+
+/// Current balance per product/variant per shop. This is a cache of the movement
+/// ledger, updated transactionally, so the POS can answer "in stock?" in one indexed
+/// read instead of summing history.
+model StockItem {
+  id        String  @id @default(cuid())
+  shopId    String
+  productId String
+  variantId String?
+
+  quantity        Decimal @default(0) @db.Decimal(18, 3)
+  /// Held by unconfirmed orders / in-flight transfers; available = quantity - reserved
+  reservedQuantity Decimal @default(0) @db.Decimal(18, 3)
+  damagedQuantity  Decimal @default(0) @db.Decimal(18, 3)
+
+  /// Weighted average cost at this shop
+  avgCost     Decimal @default(0) @db.Decimal(18, 4)
+  /// quantity × avgCost, maintained for fast stock-value roll-ups
+  stockValue  Decimal @default(0) @db.Decimal(18, 4)
+
+  lastMovementAt DateTime?
+  lastCountedAt  DateTime?
+  /// Drives the "slow moving / dead stock" classification
+  lastSoldAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shop    Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, productId, variantId])
+  @@index([shopId, quantity])
+  @@index([productId])
+  @@index([shopId, lastSoldAt])
+  @@map("stock_items")
+}
+
+/// The immutable inventory ledger. Every unit that enters or leaves any shop is one
+/// row here. Nothing in this table is ever updated or deleted — corrections are new
+/// rows. Stock at any past date is reconstructible by replaying it.
+model StockMovement {
+  id        String            @id @default(cuid())
+  shopId    String
+  productId String
+  variantId String?
+  type      StockMovementType
+
+  /// Always positive; direction is implied by `type`
+  quantity    Decimal @db.Decimal(18, 3)
+  /// Signed: +in, -out. Denormalised so SUM() gives the balance directly.
+  signedQuantity Decimal @db.Decimal(18, 3)
+  unitCost    Decimal @default(0) @db.Decimal(18, 4)
+  totalCost   Decimal @default(0) @db.Decimal(18, 4)
+
+  /// Running balance at this shop after the movement — makes stock-as-of queries and
+  /// aging reports a single indexed lookup rather than a full replay.
+  balanceAfter Decimal @db.Decimal(18, 3)
+
+  /// Polymorphic link to whatever caused the movement
+  referenceType String?
+  referenceId   String?
+  referenceNumber String?
+  batchId       String?
+
+  notes       String?
+  movementDate DateTime @default(now())
+  createdAt   DateTime @default(now())
+  createdById String?
+
+  shop    Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  batch   StockBatch?     @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@index([shopId, productId, movementDate])
+  @@index([productId, movementDate])
+  @@index([referenceType, referenceId])
+  @@index([shopId, type, movementDate])
+  @@index([movementDate])
+  @@map("stock_movements")
+}
+
+/// A cost layer. FIFO and LIFO consume these in date order; weighted average ignores
+/// them and uses StockItem.avgCost. Keeping layers regardless means the valuation
+/// method can be switched without losing history.
+model StockBatch {
+  id        String  @id @default(cuid())
+  shopId    String
+  productId String
+  variantId String?
+
+  batchNumber   String?
+  /// Original quantity received in this layer
+  quantity      Decimal @db.Decimal(18, 3)
+  /// What is left after consumption
+  remainingQuantity Decimal @db.Decimal(18, 3)
+  unitCost      Decimal @db.Decimal(18, 4)
+
+  receivedDate DateTime @default(now())
+  expiryDate   DateTime?
+
+  referenceType String?
+  referenceId   String?
+  supplierId    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shop    Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  movements StockMovement[]
+
+  @@index([shopId, productId, receivedDate])
+  @@index([shopId, productId, remainingQuantity])
+  @@map("stock_batches")
+}
+
+model StockTransfer {
+  id             String         @id @default(cuid())
+  organizationId String
+  transferNumber String
+  fromShopId     String
+  toShopId       String
+  status         DocumentStatus @default(DRAFT)
+
+  transferDate  DateTime  @default(now())
+  dispatchedAt  DateTime?
+  receivedAt    DateTime?
+
+  vehicleNumber   String?
+  transporterName String?
+  /// GST e-way bill is mandatory for consignments above ₹50,000
+  ewayBillNumber  String?
+
+  totalQuantity Decimal @default(0) @db.Decimal(18, 3)
+  totalValue    Decimal @default(0) @db.Decimal(18, 4)
+
+  notes        String?
+  createdById  String?
+  approvedById String?
+  receivedById String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  fromShop Shop @relation("TransferFrom", fields: [fromShopId], references: [id])
+  toShop   Shop @relation("TransferTo", fields: [toShopId], references: [id])
+
+  lines StockTransferLine[]
+
+  @@unique([organizationId, transferNumber])
+  @@index([organizationId, status, transferDate])
+  @@index([fromShopId, transferDate])
+  @@index([toShopId, transferDate])
+  @@map("stock_transfers")
+}
+
+model StockTransferLine {
+  id         String  @id @default(cuid())
+  transferId String
+  productId  String
+  variantId  String?
+
+  quantity         Decimal @db.Decimal(18, 3)
+  /// May be less than sent when goods are damaged in transit
+  receivedQuantity Decimal @default(0) @db.Decimal(18, 3)
+  unitCost         Decimal @default(0) @db.Decimal(18, 4)
+  totalCost        Decimal @default(0) @db.Decimal(18, 4)
+  notes            String?
+
+  transfer StockTransfer   @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  product  Product         @relation(fields: [productId], references: [id])
+  variant  ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([transferId])
+  @@index([productId])
+  @@map("stock_transfer_lines")
+}
+
+model StockAdjustment {
+  id               String           @id @default(cuid())
+  organizationId   String
+  adjustmentNumber String
+  shopId           String
+  reason           AdjustmentReason
+  status           DocumentStatus   @default(DRAFT)
+
+  adjustmentDate DateTime @default(now())
+  /// Net financial impact, posted to a shrinkage/write-off expense account
+  totalValueImpact Decimal @default(0) @db.Decimal(18, 4)
+
+  notes        String?
+  createdById  String?
+  approvedById String?
+  approvedAt   DateTime?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  shop Shop @relation(fields: [shopId], references: [id])
+
+  lines StockAdjustmentLine[]
+
+  @@unique([organizationId, adjustmentNumber])
+  @@index([organizationId, shopId, adjustmentDate])
+  @@map("stock_adjustments")
+}
+
+model StockAdjustmentLine {
+  id           String  @id @default(cuid())
+  adjustmentId String
+  productId    String
+  variantId    String?
+
+  /// Signed: negative writes stock off, positive writes it on
+  quantityDelta Decimal @db.Decimal(18, 3)
+  unitCost      Decimal @default(0) @db.Decimal(18, 4)
+  valueImpact   Decimal @default(0) @db.Decimal(18, 4)
+  notes         String?
+
+  adjustment StockAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade)
+  product    Product         @relation(fields: [productId], references: [id])
+  variant    ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([adjustmentId])
+  @@map("stock_adjustment_lines")
+}
+
+/// Rolling physical verification: count a slice of the catalogue each week rather
+/// than shutting the shop for a full stocktake.
+model CycleCount {
+  id             String         @id @default(cuid())
+  organizationId String
+  countNumber    String
+  shopId         String
+  status         DocumentStatus @default(DRAFT)
+
+  scheduledDate DateTime
+  startedAt     DateTime?
+  completedAt   DateTime?
+
+  /// Which slice: by category, by shelf, or an ABC-value class
+  scopeType  String?
+  scopeValue String?
+
+  totalItems      Int     @default(0)
+  countedItems    Int     @default(0)
+  discrepancies   Int     @default(0)
+  netValueImpact  Decimal @default(0) @db.Decimal(18, 4)
+
+  notes       String?
+  createdById String?
+  countedById String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  shop  Shop             @relation(fields: [shopId], references: [id])
+  lines CycleCountLine[]
+
+  @@unique([organizationId, countNumber])
+  @@index([organizationId, shopId, scheduledDate])
+  @@map("cycle_counts")
+}
+
+model CycleCountLine {
+  id        String  @id @default(cuid())
+  countId   String
+  productId String
+  variantId String?
+
+  systemQuantity  Decimal  @db.Decimal(18, 3)
+  countedQuantity Decimal? @db.Decimal(18, 3)
+  variance        Decimal  @default(0) @db.Decimal(18, 3)
+  varianceValue   Decimal  @default(0) @db.Decimal(18, 4)
+  countedAt       DateTime?
+  notes           String?
+
+  count   CycleCount      @relation(fields: [countId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([countId])
+  @@map("cycle_count_lines")
+}
+
+// ============================================================================
+//  SECTION 6 — CUSTOMERS
+// ============================================================================
+
+model Customer {
+  id             String       @id @default(cuid())
+  organizationId String
+  code           String
+  name           String
+  type           CustomerType @default(RETAIL)
+
+  phone          String
+  alternatePhone String?
+  email          String?
+  gstin          String?
+
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  district     String?
+  stateCode    String?
+  pincode      String?
+  country      String  @default("IN")
+  /// Defaults to the customer's own state; overridable for ship-to-different-state
+  placeOfSupplyStateCode String?
+
+  birthday    DateTime?
+  anniversary DateTime?
+
+  creditLimit      Decimal @default(0) @db.Decimal(18, 4)
+  creditPeriodDays Int     @default(0)
+  openingBalance   Decimal @default(0) @db.Decimal(18, 4)
+  /// Positive = customer owes us
+  outstandingAmount Decimal @default(0) @db.Decimal(18, 4)
+
+  loyaltyEnrolled Boolean @default(true)
+  loyaltyPoints   Int     @default(0)
+  loyaltyTier     String  @default("BRONZE")
+  /// Prepaid store wallet balance
+  walletBalance   Decimal @default(0) @db.Decimal(18, 4)
+
+  preferredContact String @default("WHATSAPP")
+  marketingOptIn   Boolean @default(true)
+
+  /// Lifetime analytics, refreshed by the nightly job
+  totalPurchases     Decimal @default(0) @db.Decimal(18, 4)
+  totalOrders        Int     @default(0)
+  avgOrderValue      Decimal @default(0) @db.Decimal(18, 4)
+  lastPurchaseAt     DateTime?
+  firstPurchaseAt    DateTime?
+  returnRatePercent  Decimal @default(0) @db.Decimal(5, 2)
+
+  notes String?
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+  createdById String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  salesInvoices     SalesInvoice[]
+  salesReturns      SalesReturn[]
+  receipts          PaymentVoucher[]
+  loyaltyLedger     LoyaltyTransaction[]
+  walletLedger      WalletTransaction[]
+  feedback          CustomerFeedback[]
+  documents         Document[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, phone])
+  @@index([organizationId, isActive, deletedAt])
+  @@index([organizationId, type])
+  @@index([organizationId, name])
+  @@index([phone])
+  @@index([organizationId, birthday])
+  @@map("customers")
+}
+
+model LoyaltyTransaction {
+  id         String   @id @default(cuid())
+  customerId String
+  /// Positive = earned, negative = redeemed or expired
+  points     Int
+  balanceAfter Int
+  reason     String
+  referenceType String?
+  referenceId   String?
+  expiresAt  DateTime?
+  createdAt  DateTime @default(now())
+  createdById String?
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, createdAt])
+  @@map("loyalty_transactions")
+}
+
+model WalletTransaction {
+  id         String   @id @default(cuid())
+  customerId String
+  /// Positive = top-up or refund credited, negative = spent
+  amount     Decimal  @db.Decimal(18, 4)
+  balanceAfter Decimal @db.Decimal(18, 4)
+  reason     String
+  referenceType String?
+  referenceId   String?
+  createdAt  DateTime @default(now())
+  createdById String?
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, createdAt])
+  @@map("wallet_transactions")
+}
+
+model CustomerFeedback {
+  id         String   @id @default(cuid())
+  customerId String
+  invoiceId  String?
+  rating     Int // 1..5
+  comment    String?
+  /// AI-derived sentiment, used by the customer analytics widget
+  sentiment  String?
+  respondedAt DateTime?
+  respondedById String?
+  createdAt  DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, createdAt])
+  @@map("customer_feedback")
+}
+
+// ============================================================================
+//  SECTION 7 — SALES
+// ============================================================================
+
+/// A cashier's till session. Opening float, closing count and the variance between
+/// expected and actual cash — the control that catches counter shrinkage.
+model PosSession {
+  id        String    @id @default(cuid())
+  shopId    String
+  userId    String
+  sessionNumber String
+
+  openedAt  DateTime  @default(now())
+  closedAt  DateTime?
+
+  openingCash Decimal @db.Decimal(18, 4)
+  closingCash Decimal? @db.Decimal(18, 4)
+  /// What the system says should be in the drawer
+  expectedCash Decimal @default(0) @db.Decimal(18, 4)
+  /// closingCash - expectedCash. Negative means cash is short.
+  cashVariance Decimal @default(0) @db.Decimal(18, 4)
+
+  totalSales     Decimal @default(0) @db.Decimal(18, 4)
+  totalCash      Decimal @default(0) @db.Decimal(18, 4)
+  totalUpi       Decimal @default(0) @db.Decimal(18, 4)
+  totalCard      Decimal @default(0) @db.Decimal(18, 4)
+  totalOther     Decimal @default(0) @db.Decimal(18, 4)
+  invoiceCount   Int     @default(0)
+  returnCount    Int     @default(0)
+
+  notes String?
+
+  shop Shop @relation(fields: [shopId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  invoices SalesInvoice[]
+
+  @@unique([shopId, sessionNumber])
+  @@index([shopId, openedAt])
+  @@index([userId, openedAt])
+  @@map("pos_sessions")
+}
+
+/// Daily cash position per shop: opening cash, receipts, payments, closing cash.
+model CashRegisterDay {
+  id       String   @id @default(cuid())
+  shopId   String
+  date     DateTime @db.Date
+
+  openingCash  Decimal @default(0) @db.Decimal(18, 4)
+  cashSales    Decimal @default(0) @db.Decimal(18, 4)
+  cashReceipts Decimal @default(0) @db.Decimal(18, 4)
+  cashPayments Decimal @default(0) @db.Decimal(18, 4)
+  cashExpenses Decimal @default(0) @db.Decimal(18, 4)
+  cashDeposited Decimal @default(0) @db.Decimal(18, 4)
+  closingCash  Decimal @default(0) @db.Decimal(18, 4)
+  /// Physically counted at close of business
+  countedCash  Decimal? @db.Decimal(18, 4)
+  variance     Decimal @default(0) @db.Decimal(18, 4)
+
+  isClosed   Boolean   @default(false)
+  closedAt   DateTime?
+  closedById String?
+  notes      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, date])
+  @@index([date])
+  @@map("cash_register_days")
+}
+
+model SalesInvoice {
+  id             String @id @default(cuid())
+  organizationId String
+  shopId         String
+  invoiceNumber  String
+  customerId     String?
+  posSessionId   String?
+
+  /// Walk-in retail customers are billed without creating a customer record
+  walkInName  String?
+  walkInPhone String?
+
+  invoiceDate DateTime @default(now())
+  dueDate     DateTime?
+
+  isWholesale Boolean    @default(false)
+  supplyType  SupplyType @default(INTRA_STATE)
+  /// GST state code of the supplying shop and of the place of supply — together they
+  /// decide CGST+SGST vs IGST, and they are frozen on the invoice so a later change
+  /// to the shop or customer record cannot retroactively alter a filed return.
+  supplierStateCode      String
+  placeOfSupplyStateCode String
+  customerGstin          String?
+
+  status        DocumentStatus @default(COMPLETED)
+  paymentStatus PaymentStatus  @default(UNPAID)
+
+  // --- Amounts (all Decimal, all frozen at the moment of billing) ---
+  grossAmount     Decimal @default(0) @db.Decimal(18, 4)
+  lineDiscount    Decimal @default(0) @db.Decimal(18, 4)
+  invoiceDiscount Decimal @default(0) @db.Decimal(18, 4)
+  totalDiscount   Decimal @default(0) @db.Decimal(18, 4)
+  taxableValue    Decimal @default(0) @db.Decimal(18, 4)
+  cgstAmount      Decimal @default(0) @db.Decimal(18, 4)
+  sgstAmount      Decimal @default(0) @db.Decimal(18, 4)
+  igstAmount      Decimal @default(0) @db.Decimal(18, 4)
+  cessAmount      Decimal @default(0) @db.Decimal(18, 4)
+  totalTax        Decimal @default(0) @db.Decimal(18, 4)
+  roundOff        Decimal @default(0) @db.Decimal(18, 4)
+  grandTotal      Decimal @default(0) @db.Decimal(18, 4)
+
+  paidAmount      Decimal @default(0) @db.Decimal(18, 4)
+  balanceAmount   Decimal @default(0) @db.Decimal(18, 4)
+
+  /// Cost of goods sold, captured at sale time so gross profit is exact and immune to
+  /// later cost changes. This is what makes per-invoice and per-supplier profit real.
+  costOfGoodsSold Decimal @default(0) @db.Decimal(18, 4)
+  grossProfit     Decimal @default(0) @db.Decimal(18, 4)
+
+  loyaltyPointsEarned   Int @default(0)
+  loyaltyPointsRedeemed Int @default(0)
+  couponCode            String?
+  couponDiscount        Decimal @default(0) @db.Decimal(18, 4)
+
+  salespersonId String?
+  notes         String?
+  termsAndConditions String?
+
+  // --- E-invoice (IRP) ---
+  irn          String?
+  ackNumber    String?
+  ackDate      DateTime?
+  signedQrCode String?
+  ewayBillNumber String?
+
+  isReturned Boolean @default(false)
+  voidedAt   DateTime?
+  voidReason String?
+  voidedById String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+  createdById String?
+
+  shop       Shop        @relation(fields: [shopId], references: [id])
+  customer   Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  posSession PosSession? @relation(fields: [posSessionId], references: [id], onDelete: SetNull)
+  salesperson Employee?  @relation("SalespersonInvoices", fields: [salespersonId], references: [id], onDelete: SetNull)
+
+  lines    SalesInvoiceLine[]
+  payments SalesPayment[]
+  returns  SalesReturn[]
+
+  @@unique([organizationId, invoiceNumber])
+  @@index([organizationId, shopId, invoiceDate])
+  @@index([organizationId, customerId, invoiceDate])
+  @@index([organizationId, invoiceDate])
+  @@index([organizationId, paymentStatus, dueDate])
+  @@index([shopId, invoiceDate, status])
+  @@index([salespersonId, invoiceDate])
+  @@map("sales_invoices")
+}
+
+model SalesInvoiceLine {
+  id        String  @id @default(cuid())
+  invoiceId String
+  productId String
+  variantId String?
+  lineNumber Int    @default(1)
+
+  /// Description is copied, not referenced: the invoice must reprint identically in
+  /// five years even if the product was renamed or deleted.
+  description String
+  hsnCode     String?
+  unitCode    String  @default("PCS")
+
+  quantity     Decimal @db.Decimal(18, 3)
+  unitPrice    Decimal @db.Decimal(18, 4)
+  mrp          Decimal @default(0) @db.Decimal(18, 4)
+  grossAmount  Decimal @db.Decimal(18, 4)
+
+  discountPercent Decimal @default(0) @db.Decimal(5, 2)
+  discountAmount  Decimal @default(0) @db.Decimal(18, 4)
+
+  taxableValue Decimal @db.Decimal(18, 4)
+  gstRate      Decimal @db.Decimal(5, 2)
+  cgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  sgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  igstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  cessRate     Decimal @default(0) @db.Decimal(5, 2)
+  cessAmount   Decimal @default(0) @db.Decimal(18, 4)
+  lineTotal    Decimal @db.Decimal(18, 4)
+
+  /// Cost consumed by this line under the active valuation method
+  unitCost     Decimal @default(0) @db.Decimal(18, 4)
+  totalCost    Decimal @default(0) @db.Decimal(18, 4)
+  grossProfit  Decimal @default(0) @db.Decimal(18, 4)
+
+  returnedQuantity Decimal @default(0) @db.Decimal(18, 3)
+  serialNumbers    String[] @default([])
+  notes            String?
+
+  invoice SalesInvoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([invoiceId])
+  @@index([productId])
+  @@map("sales_invoice_lines")
+}
+
+model SalesPayment {
+  id        String      @id @default(cuid())
+  invoiceId String
+  mode      PaymentMode
+  amount    Decimal     @db.Decimal(18, 4)
+  reference String?
+  bankAccountId String?
+  /// Card/UPI settlement fees, netted off in the bank reconciliation
+  chargeAmount Decimal @default(0) @db.Decimal(18, 4)
+  paidAt    DateTime    @default(now())
+  createdAt DateTime    @default(now())
+  createdById String?
+
+  invoice     SalesInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  bankAccount BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
+
+  @@index([invoiceId])
+  @@index([paidAt, mode])
+  @@map("sales_payments")
+}
+
+model SalesReturn {
+  id             String @id @default(cuid())
+  organizationId String
+  shopId         String
+  returnNumber   String
+  /// Credit note number as reported in GSTR-1
+  creditNoteNumber String?
+  invoiceId      String?
+  customerId     String?
+
+  returnDate DateTime       @default(now())
+  reason     String
+  status     DocumentStatus @default(COMPLETED)
+
+  /// EXCHANGE swaps goods, REFUND returns money, CREDIT issues store credit
+  settlementType String @default("REFUND")
+
+  taxableValue Decimal @default(0) @db.Decimal(18, 4)
+  cgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  sgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  igstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  cessAmount   Decimal @default(0) @db.Decimal(18, 4)
+  totalTax     Decimal @default(0) @db.Decimal(18, 4)
+  roundOff     Decimal @default(0) @db.Decimal(18, 4)
+  grandTotal   Decimal @default(0) @db.Decimal(18, 4)
+  refundedAmount Decimal @default(0) @db.Decimal(18, 4)
+  costOfGoodsReturned Decimal @default(0) @db.Decimal(18, 4)
+
+  /// Goods that came back damaged go to the damaged bin, not sellable stock
+  restockToInventory Boolean @default(true)
+
+  notes       String?
+  createdById String?
+  approvedById String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  shop     Shop          @relation(fields: [shopId], references: [id])
+  invoice  SalesInvoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  customer Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  lines SalesReturnLine[]
+
+  @@unique([organizationId, returnNumber])
+  @@index([organizationId, shopId, returnDate])
+  @@index([invoiceId])
+  @@map("sales_returns")
+}
+
+model SalesReturnLine {
+  id        String  @id @default(cuid())
+  returnId  String
+  productId String
+  variantId String?
+  invoiceLineId String?
+
+  description  String
+  hsnCode      String?
+  quantity     Decimal @db.Decimal(18, 3)
+  unitPrice    Decimal @db.Decimal(18, 4)
+  taxableValue Decimal @db.Decimal(18, 4)
+  gstRate      Decimal @db.Decimal(5, 2)
+  cgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  sgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  igstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  cessAmount   Decimal @default(0) @db.Decimal(18, 4)
+  lineTotal    Decimal @db.Decimal(18, 4)
+  unitCost     Decimal @default(0) @db.Decimal(18, 4)
+  totalCost    Decimal @default(0) @db.Decimal(18, 4)
+
+  condition String  @default("GOOD") // GOOD | DAMAGED
+  notes     String?
+
+  salesReturn SalesReturn     @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  product     Product         @relation(fields: [productId], references: [id])
+  variant     ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([returnId])
+  @@map("sales_return_lines")
+}
+
+model Coupon {
+  id             String   @id @default(cuid())
+  organizationId String
+  code           String
+  description    String?
+  /// PERCENT | FLAT
+  discountType   String   @default("PERCENT")
+  discountValue  Decimal  @db.Decimal(18, 4)
+  maxDiscount    Decimal? @db.Decimal(18, 4)
+  minOrderValue  Decimal  @default(0) @db.Decimal(18, 4)
+
+  validFrom DateTime
+  validTo   DateTime
+  usageLimit Int?
+  usageCount Int      @default(0)
+  perCustomerLimit Int?
+  applicableShopIds     String[] @default([])
+  applicableCategoryIds String[] @default([])
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, code])
+  @@index([organizationId, isActive, validTo])
+  @@map("coupons")
+}
+
+model GiftCard {
+  id             String   @id @default(cuid())
+  organizationId String
+  cardNumber     String
+  /// Bcrypt hash of the PIN; the raw PIN is shown once at issue and never stored
+  pinHash        String?
+  initialValue   Decimal  @db.Decimal(18, 4)
+  currentBalance Decimal  @db.Decimal(18, 4)
+  issuedToName   String?
+  issuedToPhone  String?
+  issuedAt       DateTime @default(now())
+  expiresAt      DateTime?
+  isActive       Boolean  @default(true)
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  archivedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, cardNumber])
+  @@map("gift_cards")
+}
+
+// ============================================================================
+//  SECTION 8 — PURCHASE
+// ============================================================================
+
+/// "We are short of winter shawls in Shop 2" — raised by a manager, approved, then
+/// converted into a purchase order.
+model PurchaseRequisition {
+  id                String         @id @default(cuid())
+  organizationId    String
+  requisitionNumber String
+  shopId            String?
+  supplierId        String?
+  status            ApprovalStatus @default(PENDING)
+
+  requisitionDate DateTime @default(now())
+  requiredByDate  DateTime?
+  justification   String?
+
+  requestedById String?
+  approvedById  String?
+  approvedAt    DateTime?
+  rejectionReason String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  supplier Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  lines    PurchaseRequisitionLine[]
+
+  @@unique([organizationId, requisitionNumber])
+  @@index([organizationId, status])
+  @@map("purchase_requisitions")
+}
+
+model PurchaseRequisitionLine {
+  id            String  @id @default(cuid())
+  requisitionId String
+  productId     String
+  quantity      Decimal @db.Decimal(18, 3)
+  estimatedCost Decimal @default(0) @db.Decimal(18, 4)
+  notes         String?
+
+  requisition PurchaseRequisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  product     Product             @relation(fields: [productId], references: [id])
+
+  @@index([requisitionId])
+  @@map("purchase_requisition_lines")
+}
+
+model PurchaseOrder {
+  id             String         @id @default(cuid())
+  organizationId String
+  shopId         String
+  supplierId     String
+  orderNumber    String
+  status         DocumentStatus @default(DRAFT)
+
+  orderDate    DateTime  @default(now())
+  expectedDate DateTime?
+  /// Set when the last line is fully received
+  completedAt  DateTime?
+
+  supplierStateCode      String?
+  placeOfSupplyStateCode String?
+  supplyType             SupplyType @default(INTRA_STATE)
+
+  grossAmount     Decimal @default(0) @db.Decimal(18, 4)
+  totalDiscount   Decimal @default(0) @db.Decimal(18, 4)
+  invoiceDiscount Decimal @default(0) @db.Decimal(18, 4)
+  taxableValue    Decimal @default(0) @db.Decimal(18, 4)
+  cgstAmount      Decimal @default(0) @db.Decimal(18, 4)
+  sgstAmount      Decimal @default(0) @db.Decimal(18, 4)
+  igstAmount      Decimal @default(0) @db.Decimal(18, 4)
+  cessAmount      Decimal @default(0) @db.Decimal(18, 4)
+  totalTax        Decimal @default(0) @db.Decimal(18, 4)
+  freightCharges  Decimal @default(0) @db.Decimal(18, 4)
+  roundOff        Decimal @default(0) @db.Decimal(18, 4)
+  grandTotal      Decimal @default(0) @db.Decimal(18, 4)
+
+  receivedPercent Decimal @default(0) @db.Decimal(5, 2)
+
+  notes              String?
+  termsAndConditions String?
+
+  createdById  String?
+  approvedById String?
+  approvedAt   DateTime?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  shop     Shop     @relation(fields: [shopId], references: [id])
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  lines         PurchaseOrderLine[]
+  goodsReceipts GoodsReceipt[]
+
+  @@unique([organizationId, orderNumber])
+  @@index([organizationId, supplierId, orderDate])
+  @@index([organizationId, shopId, status])
+  @@index([organizationId, status, expectedDate])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id        String  @id @default(cuid())
+  orderId   String
+  productId String
+  variantId String?
+  lineNumber Int    @default(1)
+
+  description String
+  hsnCode     String?
+  unitCode    String  @default("PCS")
+
+  quantity         Decimal @db.Decimal(18, 3)
+  receivedQuantity Decimal @default(0) @db.Decimal(18, 3)
+  unitCost         Decimal @db.Decimal(18, 4)
+  grossAmount      Decimal @db.Decimal(18, 4)
+  discountPercent  Decimal @default(0) @db.Decimal(5, 2)
+  discountAmount   Decimal @default(0) @db.Decimal(18, 4)
+  taxableValue     Decimal @db.Decimal(18, 4)
+  gstRate          Decimal @db.Decimal(5, 2)
+  cgstAmount       Decimal @default(0) @db.Decimal(18, 4)
+  sgstAmount       Decimal @default(0) @db.Decimal(18, 4)
+  igstAmount       Decimal @default(0) @db.Decimal(18, 4)
+  cessAmount       Decimal @default(0) @db.Decimal(18, 4)
+  lineTotal        Decimal @db.Decimal(18, 4)
+  expectedDate     DateTime?
+  notes            String?
+
+  order   PurchaseOrder   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("purchase_order_lines")
+}
+
+/// Physical arrival of goods. This — not the purchase order — is what moves stock.
+model GoodsReceipt {
+  id              String         @id @default(cuid())
+  organizationId  String
+  shopId          String
+  supplierId      String
+  purchaseOrderId String?
+  receiptNumber   String
+  status          DocumentStatus @default(COMPLETED)
+
+  receiptDate           DateTime @default(now())
+  supplierInvoiceNumber String?
+  supplierInvoiceDate   DateTime?
+  /// Days between the PO's expected date and actual arrival — feeds supplier scoring
+  delayDays             Int      @default(0)
+
+  totalQuantity    Decimal @default(0) @db.Decimal(18, 3)
+  acceptedQuantity Decimal @default(0) @db.Decimal(18, 3)
+  rejectedQuantity Decimal @default(0) @db.Decimal(18, 3)
+  totalValue       Decimal @default(0) @db.Decimal(18, 4)
+
+  vehicleNumber String?
+  ewayBillNumber String?
+  notes         String?
+
+  createdById  String?
+  inspectedById String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  shop          Shop           @relation(fields: [shopId], references: [id])
+  supplier      Supplier       @relation(fields: [supplierId], references: [id])
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+
+  lines         GoodsReceiptLine[]
+  bills         PurchaseBill[]
+  ratingEntries SupplierRatingEntry[]
+
+  @@unique([organizationId, receiptNumber])
+  @@index([organizationId, supplierId, receiptDate])
+  @@index([organizationId, shopId, receiptDate])
+  @@map("goods_receipts")
+}
+
+model GoodsReceiptLine {
+  id         String  @id @default(cuid())
+  receiptId  String
+  productId  String
+  variantId  String?
+  orderLineId String?
+
+  description      String
+  quantity         Decimal @db.Decimal(18, 3)
+  acceptedQuantity Decimal @db.Decimal(18, 3)
+  rejectedQuantity Decimal @default(0) @db.Decimal(18, 3)
+  rejectionReason  String?
+  unitCost         Decimal @db.Decimal(18, 4)
+  totalCost        Decimal @db.Decimal(18, 4)
+  batchNumber      String?
+  expiryDate       DateTime?
+  notes            String?
+
+  receipt GoodsReceipt    @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([receiptId])
+  @@map("goods_receipt_lines")
+}
+
+/// The supplier's tax invoice — the document that creates the payable and the input
+/// tax credit. Separate from GoodsReceipt because goods and paperwork rarely arrive
+/// together in this trade.
+model PurchaseBill {
+  id             String @id @default(cuid())
+  organizationId String
+  shopId         String
+  supplierId     String
+  goodsReceiptId String?
+  billNumber     String
+  /// The supplier's own invoice number, as printed — needed for GSTR-2B matching
+  supplierBillNumber String
+  billDate       DateTime
+  dueDate        DateTime?
+
+  status        DocumentStatus @default(APPROVED)
+  paymentStatus PaymentStatus  @default(UNPAID)
+
+  supplierStateCode      String?
+  placeOfSupplyStateCode String?
+  supplyType             SupplyType @default(INTRA_STATE)
+  supplierGstin          String?
+  /// Reverse charge applies (unregistered supplier, certain notified goods)
+  isReverseCharge        Boolean    @default(false)
+  /// Whether input tax credit may be claimed on this bill
+  itcEligible            Boolean    @default(true)
+
+  grossAmount    Decimal @default(0) @db.Decimal(18, 4)
+  totalDiscount  Decimal @default(0) @db.Decimal(18, 4)
+  taxableValue   Decimal @default(0) @db.Decimal(18, 4)
+  cgstAmount     Decimal @default(0) @db.Decimal(18, 4)
+  sgstAmount     Decimal @default(0) @db.Decimal(18, 4)
+  igstAmount     Decimal @default(0) @db.Decimal(18, 4)
+  cessAmount     Decimal @default(0) @db.Decimal(18, 4)
+  totalTax       Decimal @default(0) @db.Decimal(18, 4)
+  freightCharges Decimal @default(0) @db.Decimal(18, 4)
+  roundOff       Decimal @default(0) @db.Decimal(18, 4)
+  grandTotal     Decimal @default(0) @db.Decimal(18, 4)
+  paidAmount     Decimal @default(0) @db.Decimal(18, 4)
+  balanceAmount  Decimal @default(0) @db.Decimal(18, 4)
+
+  notes String?
+
+  createdById String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  shop         Shop          @relation(fields: [shopId], references: [id])
+  supplier     Supplier      @relation(fields: [supplierId], references: [id])
+  goodsReceipt GoodsReceipt? @relation(fields: [goodsReceiptId], references: [id], onDelete: SetNull)
+
+  lines    PurchaseBillLine[]
+  payments PaymentAllocation[]
+
+  @@unique([organizationId, billNumber])
+  @@index([organizationId, supplierId, billDate])
+  @@index([organizationId, paymentStatus, dueDate])
+  @@index([organizationId, billDate])
+  @@map("purchase_bills")
+}
+
+model PurchaseBillLine {
+  id        String  @id @default(cuid())
+  billId    String
+  productId String
+  variantId String?
+
+  description  String
+  hsnCode      String?
+  unitCode     String  @default("PCS")
+  quantity     Decimal @db.Decimal(18, 3)
+  unitCost     Decimal @db.Decimal(18, 4)
+  grossAmount  Decimal @db.Decimal(18, 4)
+  discountAmount Decimal @default(0) @db.Decimal(18, 4)
+  taxableValue Decimal @db.Decimal(18, 4)
+  gstRate      Decimal @db.Decimal(5, 2)
+  cgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  sgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  igstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  cessAmount   Decimal @default(0) @db.Decimal(18, 4)
+  lineTotal    Decimal @db.Decimal(18, 4)
+
+  bill    PurchaseBill    @relation(fields: [billId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([billId])
+  @@map("purchase_bill_lines")
+}
+
+model PurchaseReturn {
+  id             String @id @default(cuid())
+  organizationId String
+  shopId         String
+  supplierId     String
+  returnNumber   String
+  /// Debit note number as reported in GSTR-1
+  debitNoteNumber String?
+  billId         String?
+
+  returnDate DateTime       @default(now())
+  reason     String
+  status     DocumentStatus @default(COMPLETED)
+
+  taxableValue Decimal @default(0) @db.Decimal(18, 4)
+  cgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  sgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  igstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  cessAmount   Decimal @default(0) @db.Decimal(18, 4)
+  totalTax     Decimal @default(0) @db.Decimal(18, 4)
+  grandTotal   Decimal @default(0) @db.Decimal(18, 4)
+
+  notes       String?
+  createdById String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  shop     Shop     @relation(fields: [shopId], references: [id])
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  lines PurchaseReturnLine[]
+
+  @@unique([organizationId, returnNumber])
+  @@index([organizationId, supplierId, returnDate])
+  @@map("purchase_returns")
+}
+
+model PurchaseReturnLine {
+  id        String  @id @default(cuid())
+  returnId  String
+  productId String
+  variantId String?
+
+  description  String
+  hsnCode      String?
+  quantity     Decimal @db.Decimal(18, 3)
+  unitCost     Decimal @db.Decimal(18, 4)
+  taxableValue Decimal @db.Decimal(18, 4)
+  gstRate      Decimal @db.Decimal(5, 2)
+  cgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  sgstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  igstAmount   Decimal @default(0) @db.Decimal(18, 4)
+  cessAmount   Decimal @default(0) @db.Decimal(18, 4)
+  lineTotal    Decimal @db.Decimal(18, 4)
+  reason       String?
+
+  purchaseReturn PurchaseReturn  @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  product        Product         @relation(fields: [productId], references: [id])
+  variant        ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([returnId])
+  @@map("purchase_return_lines")
+}
+
+// ============================================================================
+//  SECTION 9 — ACCOUNTING
+// ============================================================================
+
+/// Chart of accounts, hierarchical. Seeded with an Indian retail/wholesale COA.
+model Account {
+  id             String      @id @default(cuid())
+  organizationId String
+  parentId       String?
+  code           String
+  name           String
+  type           AccountType
+  description    String?
+
+  isBankAccount  Boolean @default(false)
+  isCashAccount  Boolean @default(false)
+  /// System accounts (GST Payable, Sales, Inventory) cannot be deleted — the posting
+  /// engine resolves them by code.
+  isSystem       Boolean @default(false)
+
+  openingBalance Decimal @default(0) @db.Decimal(18, 4)
+  /// Running balance, maintained transactionally with every journal line
+  currentBalance Decimal @default(0) @db.Decimal(18, 4)
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  parent       Account?     @relation("AccountTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children     Account[]    @relation("AccountTree")
+
+  journalLines JournalLine[]
+  bankAccount  BankAccount?
+  expenseCategories ExpenseCategory[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, type])
+  @@index([organizationId, parentId])
+  @@map("accounts")
+}
+
+/// A balanced double-entry transaction. Enforced at write time: the service refuses
+/// to persist an entry whose debits do not equal its credits.
+model JournalEntry {
+  id             String        @id @default(cuid())
+  organizationId String
+  shopId         String?
+  entryNumber    String
+  entryDate      DateTime
+  source         JournalSource @default(MANUAL)
+  narration      String
+
+  /// What generated this entry, so a ledger line can be traced back to its invoice
+  referenceType   String?
+  referenceId     String?
+  referenceNumber String?
+
+  totalDebit  Decimal @db.Decimal(18, 4)
+  totalCredit Decimal @db.Decimal(18, 4)
+
+  /// Posted entries are locked. Reversal creates a new mirrored entry.
+  isPosted   Boolean   @default(true)
+  postedAt   DateTime?
+  reversedById String?
+  reversesId   String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  createdById String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  shop         Shop?        @relation(fields: [shopId], references: [id], onDelete: SetNull)
+
+  lines JournalLine[]
+
+  @@unique([organizationId, entryNumber])
+  @@index([organizationId, entryDate])
+  @@index([organizationId, source, entryDate])
+  @@index([referenceType, referenceId])
+  @@index([shopId, entryDate])
+  @@map("journal_entries")
+}
+
+/// Append-only. One side of a double entry.
+model JournalLine {
+  id        String  @id @default(cuid())
+  entryId   String
+  accountId String
+  shopId    String?
+
+  debit  Decimal @default(0) @db.Decimal(18, 4)
+  credit Decimal @default(0) @db.Decimal(18, 4)
+  narration String?
+  /// Running balance on the account after this line, for fast ledger printing
+  balanceAfter Decimal @default(0) @db.Decimal(18, 4)
+
+  createdAt DateTime @default(now())
+
+  entry   JournalEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  account Account      @relation(fields: [accountId], references: [id])
+
+  @@index([entryId])
+  @@index([accountId, createdAt])
+  @@index([shopId])
+  @@map("journal_lines")
+}
+
+model BankAccount {
+  id             String  @id @default(cuid())
+  organizationId String
+  accountId      String  @unique
+  shopId         String?
+
+  bankName      String
+  accountNumber String
+  ifsc          String
+  branch        String?
+  accountType   String  @default("CURRENT")
+  accountHolder String
+  upiId         String?
+
+  openingBalance Decimal @default(0) @db.Decimal(18, 4)
+  currentBalance Decimal @default(0) @db.Decimal(18, 4)
+  lastReconciledAt DateTime?
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      Account      @relation(fields: [accountId], references: [id])
+
+  salesPayments SalesPayment[]
+  vouchers      PaymentVoucher[]
+
+  @@index([organizationId, isActive])
+  @@map("bank_accounts")
+}
+
+/// A single money-movement document covering both receipts (from customers) and
+/// payments (to suppliers, staff, landlords). One model instead of two because the
+/// posting logic is symmetrical and only the sign differs.
+model PaymentVoucher {
+  id             String           @id @default(cuid())
+  organizationId String
+  shopId         String?
+  voucherNumber  String
+  direction      PaymentDirection
+  voucherDate    DateTime         @default(now())
+
+  supplierId String?
+  customerId String?
+  employeeId String?
+  /// Free-text payee for one-off payments (courier, repair)
+  payeeName  String?
+
+  mode          PaymentMode
+  amount        Decimal     @db.Decimal(18, 4)
+  /// Unapplied balance when the payment exceeds the bills it settles (on-account)
+  unallocatedAmount Decimal @default(0) @db.Decimal(18, 4)
+  bankAccountId String?
+  reference     String?
+  chequeNumber  String?
+  chequeDate    DateTime?
+  /// PENDING | CLEARED | BOUNCED — cheques in this trade bounce often enough to track
+  clearanceStatus String @default("CLEARED")
+
+  narration String?
+  notes     String?
+
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  archivedAt  DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  supplier     Supplier?    @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  customer     Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  employee     Employee?    @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  bankAccount  BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
+
+  allocations PaymentAllocation[]
+
+  @@unique([organizationId, voucherNumber])
+  @@index([organizationId, direction, voucherDate])
+  @@index([supplierId, voucherDate])
+  @@index([customerId, voucherDate])
+  @@map("payment_vouchers")
+}
+
+/// Links a payment to the specific bills it settles. Without this, "how much do we
+/// still owe supplier X on bill 4471?" is unanswerable.
+model PaymentAllocation {
+  id        String  @id @default(cuid())
+  voucherId String
+  billId    String?
+  invoiceId String?
+  amount    Decimal @db.Decimal(18, 4)
+  createdAt DateTime @default(now())
+
+  voucher PaymentVoucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  bill    PurchaseBill?  @relation(fields: [billId], references: [id], onDelete: Cascade)
+
+  @@index([voucherId])
+  @@index([billId])
+  @@index([invoiceId])
+  @@map("payment_allocations")
+}
+
+model FixedAsset {
+  id             String   @id @default(cuid())
+  organizationId String
+  shopId         String?
+  assetCode      String
+  name           String
+  category       String
+  description    String?
+
+  purchaseDate  DateTime
+  purchaseCost  Decimal  @db.Decimal(18, 4)
+  supplierId    String?
+  invoiceNumber String?
+
+  /// SLM (straight line) or WDV (written down value) — WDV is the Income Tax Act default
+  depreciationMethod String  @default("WDV")
+  depreciationRate   Decimal @db.Decimal(5, 2)
+  salvageValue       Decimal @default(0) @db.Decimal(18, 4)
+  usefulLifeYears    Int?
+
+  accumulatedDepreciation Decimal @default(0) @db.Decimal(18, 4)
+  currentBookValue        Decimal @db.Decimal(18, 4)
+  lastDepreciationDate    DateTime?
+
+  disposedAt    DateTime?
+  disposalValue Decimal?  @db.Decimal(18, 4)
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  shop         Shop?        @relation(fields: [shopId], references: [id], onDelete: SetNull)
+
+  depreciationEntries DepreciationEntry[]
+
+  @@unique([organizationId, assetCode])
+  @@index([organizationId, shopId])
+  @@map("fixed_assets")
+}
+
+model DepreciationEntry {
+  id           String   @id @default(cuid())
+  assetId      String
+  periodStart  DateTime
+  periodEnd    DateTime
+  amount       Decimal  @db.Decimal(18, 4)
+  bookValueAfter Decimal @db.Decimal(18, 4)
+  journalEntryId String?
+  createdAt    DateTime @default(now())
+
+  asset FixedAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, periodEnd])
+  @@map("depreciation_entries")
+}
+
+// ============================================================================
+//  SECTION 10 — GST & COMPLIANCE
+// ============================================================================
+
+/// One row per return period per GSTIN. Holds the computed payload so a filing can be
+/// reproduced exactly as it was submitted, even after later corrections to the books.
+model GstReturn {
+  id             String        @id @default(cuid())
+  organizationId String
+  gstin          String
+  returnType     GstReturnType
+  /// "MM-YYYY" as used by the GST portal
+  period         String
+  periodStart    DateTime
+  periodEnd      DateTime
+  status         FilingStatus  @default(NOT_STARTED)
+
+  totalTaxableValue Decimal @default(0) @db.Decimal(18, 4)
+  totalCgst         Decimal @default(0) @db.Decimal(18, 4)
+  totalSgst         Decimal @default(0) @db.Decimal(18, 4)
+  totalIgst         Decimal @default(0) @db.Decimal(18, 4)
+  totalCess         Decimal @default(0) @db.Decimal(18, 4)
+  /// Input tax credit claimed in the period
+  itcCgst           Decimal @default(0) @db.Decimal(18, 4)
+  itcSgst           Decimal @default(0) @db.Decimal(18, 4)
+  itcIgst           Decimal @default(0) @db.Decimal(18, 4)
+  netPayable        Decimal @default(0) @db.Decimal(18, 4)
+
+  /// The generated JSON offline-utility payload
+  payload Json?
+
+  filedAt        DateTime?
+  acknowledgementNumber String?
+  filedById      String?
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, gstin, returnType, period])
+  @@index([organizationId, status])
+  @@map("gst_returns")
+}
+
+// ============================================================================
+//  SECTION 11 — EXPENSES
+// ============================================================================
+
+model ExpenseCategory {
+  id             String  @id @default(cuid())
+  organizationId String
+  name           String
+  slug           String
+  /// The P&L account this category posts to
+  accountId      String?
+  description    String?
+  /// Rent, insurance and salary are expected every month; the dashboard flags a
+  /// missing recurring expense as an anomaly.
+  isRecurringByNature Boolean @default(false)
+  monthlyBudget  Decimal? @db.Decimal(18, 4)
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account      Account?     @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  expenses          Expense[]
+  recurringExpenses RecurringExpense[]
+
+  @@unique([organizationId, slug])
+  @@map("expense_categories")
+}
+
+model Expense {
+  id             String @id @default(cuid())
+  organizationId String
+  shopId         String?
+  categoryId     String
+  expenseNumber  String
+
+  expenseDate DateTime
+  amount      Decimal  @db.Decimal(18, 4)
+  gstRate     Decimal  @default(0) @db.Decimal(5, 2)
+  gstAmount   Decimal  @default(0) @db.Decimal(18, 4)
+  totalAmount Decimal  @db.Decimal(18, 4)
+  itcEligible Boolean  @default(false)
+
+  paymentMode      PaymentMode @default(CASH)
+  paidFromAccountId String?
+  vendorName       String?
+  vendorGstin      String?
+  billNumber       String?
+  description      String?
+
+  /// Set when generated from a RecurringExpense template
+  recurringExpenseId String?
+
+  approvalStatus ApprovalStatus @default(APPROVED)
+  approvedById   String?
+  approvedAt     DateTime?
+
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  archivedAt  DateTime?
+
+  shop     Shop?           @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  category ExpenseCategory @relation(fields: [categoryId], references: [id])
+  recurringExpense RecurringExpense? @relation(fields: [recurringExpenseId], references: [id], onDelete: SetNull)
+
+  documents Document[]
+
+  @@unique([organizationId, expenseNumber])
+  @@index([organizationId, expenseDate])
+  @@index([organizationId, shopId, expenseDate])
+  @@index([organizationId, categoryId, expenseDate])
+  @@map("expenses")
+}
+
+/// Template for rent, salary, insurance, internet. A scheduled job materialises the
+/// next Expense row when it falls due and notifies the owner.
+model RecurringExpense {
+  id             String             @id @default(cuid())
+  organizationId String
+  shopId         String?
+  categoryId     String
+  name           String
+  amount         Decimal            @db.Decimal(18, 4)
+  interval       RecurrenceInterval
+  /// Day of month (1-31) for MONTHLY, day of week (0-6) for WEEKLY
+  dayOfPeriod    Int                @default(1)
+
+  startDate DateTime
+  endDate   DateTime?
+  nextDueDate DateTime
+  lastGeneratedAt DateTime?
+
+  paymentMode PaymentMode @default(BANK_TRANSFER)
+  vendorName  String?
+  /// When false, the owner must confirm before the expense is booked
+  autoGenerate Boolean @default(true)
+  reminderDaysBefore Int @default(3)
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  shop     Shop?           @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  category ExpenseCategory @relation(fields: [categoryId], references: [id])
+  expenses Expense[]
+
+  @@index([organizationId, nextDueDate, isActive])
+  @@map("recurring_expenses")
+}
+
+// ============================================================================
+//  SECTION 12 — EMPLOYEES & PAYROLL
+// ============================================================================
+
+model Employee {
+  id             String  @id @default(cuid())
+  organizationId String
+  shopId         String
+  userId         String? @unique
+  employeeCode   String
+
+  name           String
+  phone          String
+  email          String?
+  designation    String
+  department     String?
+  joiningDate    DateTime
+  leavingDate    DateTime?
+
+  monthlySalary     Decimal @db.Decimal(18, 4)
+  commissionPercent Decimal @default(0) @db.Decimal(5, 2)
+  monthlyTarget     Decimal @default(0) @db.Decimal(18, 4)
+
+  shiftStart String?
+  shiftEnd   String?
+
+  pan           String?
+  aadhaarLast4  String?
+  bankAccountHolder String?
+  bankAccountNumber String?
+  bankIfsc          String?
+  bankName          String?
+
+  addressLine1 String?
+  city         String?
+  stateCode    String?
+  pincode      String?
+  emergencyContact String?
+  photoUrl     String?
+
+  /// Rolling performance, refreshed nightly
+  totalSalesValue   Decimal @default(0) @db.Decimal(18, 4)
+  targetAchievedPercent Decimal @default(0) @db.Decimal(6, 2)
+  attendancePercent Decimal @default(0) @db.Decimal(5, 2)
+
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  shop Shop  @relation("EmployeeShop", fields: [shopId], references: [id])
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  managedShops   Shop[]           @relation("ShopManager")
+  attendance     Attendance[]
+  leaveRequests  LeaveRequest[]
+  advances       SalaryAdvance[]
+  payrollRecords PayrollRecord[]
+  commissions    CommissionRecord[]
+  invoicesSold   SalesInvoice[]   @relation("SalespersonInvoices")
+  payments       PaymentVoucher[]
+  documents      Document[]
+
+  @@unique([organizationId, employeeCode])
+  @@index([organizationId, shopId, isActive])
+  @@map("employees")
+}
+
+model Attendance {
+  id         String           @id @default(cuid())
+  employeeId String
+  date       DateTime         @db.Date
+  status     AttendanceStatus
+
+  checkIn  DateTime?
+  checkOut DateTime?
+  /// Derived from check-in/check-out; used for overtime and part-time payroll
+  workedHours   Decimal @default(0) @db.Decimal(5, 2)
+  overtimeHours Decimal @default(0) @db.Decimal(5, 2)
+  lateMinutes   Int     @default(0)
+
+  markedById String?
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, date])
+  @@index([date, status])
+  @@map("attendance")
+}
+
+model LeaveRequest {
+  id         String         @id @default(cuid())
+  employeeId String
+  type       LeaveType
+  fromDate   DateTime       @db.Date
+  toDate     DateTime       @db.Date
+  days       Decimal        @db.Decimal(4, 1)
+  reason     String
+  status     ApprovalStatus @default(PENDING)
+
+  approvedById String?
+  approvedAt   DateTime?
+  rejectionReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, fromDate])
+  @@index([status])
+  @@map("leave_requests")
+}
+
+model SalaryAdvance {
+  id         String         @id @default(cuid())
+  employeeId String
+  amount     Decimal        @db.Decimal(18, 4)
+  requestDate DateTime      @default(now())
+  reason     String?
+  status     ApprovalStatus @default(PENDING)
+
+  /// Advances are recovered over several months; this tracks what is left.
+  recoveredAmount Decimal @default(0) @db.Decimal(18, 4)
+  balanceAmount   Decimal @db.Decimal(18, 4)
+  installments    Int     @default(1)
+
+  approvedById String?
+  approvedAt   DateTime?
+  paidAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, status])
+  @@map("salary_advances")
+}
+
+model PayrollRecord {
+  id         String @id @default(cuid())
+  employeeId String
+  /// "MM-YYYY"
+  period     String
+  periodStart DateTime
+  periodEnd   DateTime
+
+  basicSalary   Decimal @db.Decimal(18, 4)
+  presentDays   Decimal @db.Decimal(4, 1)
+  totalDays     Decimal @db.Decimal(4, 1)
+  /// Salary after pro-rating for unpaid absence
+  earnedSalary  Decimal @db.Decimal(18, 4)
+  overtimeAmount Decimal @default(0) @db.Decimal(18, 4)
+  commissionAmount Decimal @default(0) @db.Decimal(18, 4)
+  bonusAmount   Decimal @default(0) @db.Decimal(18, 4)
+  grossEarnings Decimal @db.Decimal(18, 4)
+
+  advanceDeduction Decimal @default(0) @db.Decimal(18, 4)
+  otherDeductions  Decimal @default(0) @db.Decimal(18, 4)
+  /// Provident Fund and Employee State Insurance, where applicable
+  pfDeduction      Decimal @default(0) @db.Decimal(18, 4)
+  esiDeduction     Decimal @default(0) @db.Decimal(18, 4)
+  tdsDeduction     Decimal @default(0) @db.Decimal(18, 4)
+  totalDeductions  Decimal @default(0) @db.Decimal(18, 4)
+
+  netPayable Decimal @db.Decimal(18, 4)
+
+  status    ApprovalStatus @default(PENDING)
+  paidAt    DateTime?
+  paymentVoucherId String?
+  notes     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, period])
+  @@index([period, status])
+  @@map("payroll_records")
+}
+
+model CommissionRecord {
+  id         String   @id @default(cuid())
+  employeeId String
+  period     String
+  invoiceId  String?
+  salesValue Decimal  @db.Decimal(18, 4)
+  commissionPercent Decimal @db.Decimal(5, 2)
+  commissionAmount  Decimal @db.Decimal(18, 4)
+  isPaid     Boolean  @default(false)
+  paidAt     DateTime?
+  createdAt  DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, period])
+  @@map("commission_records")
+}
+
+// ============================================================================
+//  SECTION 13 — DOCUMENTS
+// ============================================================================
+
+/// Polymorphic file store. One table for supplier agreements, GST certificates, shop
+/// licences, insurance policies, product photos and scanned bills — attached to any
+/// entity by (entityType, entityId).
+model Document {
+  id             String  @id @default(cuid())
+  organizationId String
+  entityType     String
+  entityId       String
+
+  name        String
+  description String?
+  /// "AGREEMENT" | "INVOICE" | "RECEIPT" | "LICENCE" | "INSURANCE" | "GST_CERTIFICATE" | "PHOTO" | "OTHER"
+  category    String  @default("OTHER")
+
+  fileName  String
+  fileSize  Int
+  mimeType  String
+  /// S3 object key, or a relative path under the local storage driver
+  storageKey String
+  url        String?
+  thumbnailUrl String?
+  checksum   String?
+
+  /// Licences, insurance policies and GST certificates expire — the notification job
+  /// scans this column and warns ahead of time.
+  expiryDate      DateTime?
+  reminderDaysBefore Int    @default(30)
+  reminderSentAt  DateTime?
+
+  tags      String[] @default([])
+  version   Int      @default(1)
+  /// Points at the previous version, so document history is navigable
+  previousVersionId String?
+
+  uploadedById String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+  archivedAt   DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  supplier     Supplier?    @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  supplierId   String?
+  customer     Customer?    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId   String?
+  employee     Employee?    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employeeId   String?
+  expense      Expense?     @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  expenseId    String?
+
+  @@index([organizationId, entityType, entityId])
+  @@index([organizationId, category])
+  @@index([organizationId, expiryDate])
+  @@map("documents")
+}
+
+// ============================================================================
+//  SECTION 14 — NOTIFICATIONS
+// ============================================================================
+
+model NotificationTemplate {
+  id       String              @id @default(cuid())
+  key      String              @unique
+  name     String
+  channel  NotificationChannel
+  /// Handlebars-style body with {{placeholders}}
+  subject  String?
+  body     String
+  /// WhatsApp Cloud API requires pre-approved template names
+  providerTemplateName String?
+  language String              @default("en")
+  isActive Boolean             @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  notifications Notification[]
+
+  @@map("notification_templates")
+}
+
+model Notification {
+  id             String              @id @default(cuid())
+  organizationId String
+  userId         String?
+  templateId     String?
+  channel        NotificationChannel @default(IN_APP)
+  status         NotificationStatus  @default(QUEUED)
+  severity       AlertSeverity       @default(INFO)
+
+  /// "STOCK" | "PAYMENT" | "COMPLIANCE" | "HR" | "SALES" | "SYSTEM"
+  category String @default("SYSTEM")
+  title    String
+  message  String
+  actionLabel String?
+  actionUrl   String?
+
+  /// Where to send it for external channels
+  recipient String?
+  /// Provider message id, for delivery-receipt reconciliation
+  providerMessageId String?
+  errorMessage      String?
+  attempts          Int @default(0)
+
+  entityType String?
+  entityId   String?
+  metadata   Json?
+
+  scheduledFor DateTime?
+  sentAt       DateTime?
+  readAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  template     NotificationTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, userId, readAt])
+  @@index([organizationId, status, scheduledFor])
+  @@index([organizationId, category, createdAt])
+  @@map("notifications")
+}
+
+// ============================================================================
+//  SECTION 15 — AI
+// ============================================================================
+
+model AiConversation {
+  id             String @id @default(cuid())
+  organizationId String
+  userId         String
+  title          String @default("New conversation")
+  shopId         String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  archivedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  messages AiMessage[]
+
+  @@index([organizationId, userId, updatedAt])
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id             String @id @default(cuid())
+  conversationId String
+  /// "user" | "assistant" | "tool"
+  role           String
+  content        String
+
+  /// Which data-access tools the assistant called, and with what arguments — this is
+  /// the audit trail for AI answers. An owner acting on "supplier X is unprofitable"
+  /// must be able to see the query behind it.
+  toolCalls Json?
+  /// Structured result the UI renders as a chart or table instead of prose
+  attachments Json?
+
+  inputTokens  Int?
+  outputTokens Int?
+  latencyMs    Int?
+  model        String?
+  /// TEXT | VOICE
+  source       String @default("TEXT")
+
+  createdAt DateTime @default(now())
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("ai_messages")
+}
+
+/// Generated insights and forecasts, cached so the dashboard is instant and the same
+/// advice is not re-billed to the AI provider on every page load.
+model AiInsight {
+  id             String        @id @default(cuid())
+  organizationId String
+  shopId         String?
+  kind           AiInsightKind
+  severity       AlertSeverity @default(INFO)
+
+  title   String
+  summary String
+  /// Structured payload: forecast series, affected product ids, expected rupee impact
+  data    Json?
+  /// Model's own confidence, 0..1 — shown in the UI so advice is never presented as fact
+  confidence Decimal? @db.Decimal(4, 3)
+  /// Rupee value at stake, used to rank suggestions by what they are worth
+  impactValue Decimal? @db.Decimal(18, 4)
+
+  entityType String?
+  entityId   String?
+
+  validFrom DateTime  @default(now())
+  validUntil DateTime?
+  dismissedAt DateTime?
+  dismissedById String?
+  actionTakenAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, kind, validUntil])
+  @@index([organizationId, shopId, dismissedAt])
+  @@map("ai_insights")
+}
+
+/// Time-series forecast points, kept separately from AiInsight so charts can query a
+/// clean numeric series without unpacking JSON.
+model Forecast {
+  id             String   @id @default(cuid())
+  organizationId String
+  shopId         String?
+  productId      String?
+  /// "SALES_VALUE" | "SALES_QUANTITY" | "DEMAND" | "CASH_FLOW"
+  metric         String
+  periodStart    DateTime
+  periodEnd      DateTime
+  predictedValue Decimal  @db.Decimal(18, 4)
+  lowerBound     Decimal? @db.Decimal(18, 4)
+  upperBound     Decimal? @db.Decimal(18, 4)
+  /// Filled in once the period passes, so forecast accuracy is measurable
+  actualValue    Decimal? @db.Decimal(18, 4)
+  method         String   @default("HOLT_WINTERS")
+  confidence     Decimal? @db.Decimal(4, 3)
+
+  createdAt DateTime @default(now())
+
+  @@unique([organizationId, shopId, productId, metric, periodStart])
+  @@index([organizationId, metric, periodStart])
+  @@map("forecasts")
+}
+
+// ============================================================================
+//  SECTION 16 — DASHBOARD, IMPORT/EXPORT, SYSTEM
+// ============================================================================
+
+/// Persisted drag-and-drop dashboard. Each user arranges their own widgets; the owner
+/// can publish a layout as the default for a role.
+model DashboardLayout {
+  id       String  @id @default(cuid())
+  userId   String
+  name     String  @default("Default")
+  /// Ordered widget descriptors: [{ id, type, x, y, w, h, config }]
+  widgets  Json    @default("[]")
+  isDefault Boolean @default(false)
+  /// When set, this layout is the template for everyone holding the role
+  sharedWithRole RoleName?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@map("dashboard_layouts")
+}
+
+/// Excel import runs. Kept so a bad import can be traced and rolled back, and so the
+/// user can download a row-by-row error report instead of a single "failed".
+model ImportJob {
+  id             String    @id @default(cuid())
+  organizationId String
+  userId         String?
+  entityType     String
+  fileName       String
+  storageKey     String?
+  status         JobStatus @default(PENDING)
+
+  totalRows     Int @default(0)
+  processedRows Int @default(0)
+  successRows   Int @default(0)
+  failedRows    Int @default(0)
+
+  /// [{ row, column, message }] — rendered as a downloadable error sheet
+  errors Json?
+  /// Ids created by this run, enabling a one-click undo
+  createdIds String[] @default([])
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status, createdAt])
+  @@map("import_jobs")
+}
+
+/// Backup runs, so "Daily Backup" is verifiable rather than assumed.
+model BackupRecord {
+  id          String    @id @default(cuid())
+  fileName    String
+  storageKey  String
+  sizeBytes   BigInt
+  checksum    String?
+  status      JobStatus @default(PENDING)
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  errorMessage String?
+  /// Verified by test-restoring into a scratch database
+  verifiedAt  DateTime?
+
+  @@index([startedAt])
+  @@map("backup_records")
+}

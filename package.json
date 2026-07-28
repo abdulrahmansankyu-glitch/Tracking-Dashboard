@@ -1,0 +1,36 @@
+{
+  "name": "intoto-erp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Intoto ERP — AI-powered ERP for Indian clothing wholesale & retail",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter \"./apps/**\" dev",
+    "dev:api": "pnpm --filter @intoto/api dev",
+    "dev:web": "pnpm --filter @intoto/web dev",
+    "build": "pnpm --filter @intoto/shared build && pnpm --filter @intoto/api build && pnpm --filter @intoto/web build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "test:e2e": "pnpm --filter @intoto/api test:e2e",
+    "db:generate": "pnpm --filter @intoto/api db:generate",
+    "db:migrate": "pnpm --filter @intoto/api db:migrate",
+    "db:push": "pnpm --filter @intoto/api db:push",
+    "db:seed": "pnpm --filter @intoto/api db:seed",
+    "db:studio": "pnpm --filter @intoto/api db:studio",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "clean": "pnpm -r exec rm -rf dist .next node_modules/.cache"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2"
+  }
+}
