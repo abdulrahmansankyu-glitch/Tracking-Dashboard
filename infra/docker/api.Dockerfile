@@ -20,6 +20,7 @@ RUN pnpm install --frozen-lockfile
 
 COPY packages/shared ./packages/shared
 COPY apps/api ./apps/api
+COPY infra ./infra
 
 # The Prisma client must be generated before the API compiles against it.
 RUN pnpm --filter @intoto/shared build \
@@ -56,9 +57,9 @@ EXPOSE 4000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:4000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
+COPY --from=builder --chown=intoto:nodejs /app/infra/docker/api-entrypoint.sh /app/entrypoint.sh
+
 # dumb-init reaps zombies and forwards SIGTERM, so the container shuts down cleanly
 # instead of being killed mid-transaction.
 ENTRYPOINT ["dumb-init", "--"]
-
-# Migrations run on boot so a deploy never serves against an out-of-date schema.
-CMD ["sh", "-c", "node ../../node_modules/prisma/build/index.js migrate deploy --schema prisma/schema.prisma || true; node dist/main.js"]
+CMD ["sh", "/app/entrypoint.sh"]

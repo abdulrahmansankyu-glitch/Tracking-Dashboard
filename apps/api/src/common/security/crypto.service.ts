@@ -30,10 +30,25 @@ export class CryptoService {
       return;
     }
     const decoded = Buffer.from(raw, 'base64');
-    if (decoded.length !== 32) {
-      throw new Error('FIELD_ENCRYPTION_KEY must decode to exactly 32 bytes (openssl rand -base64 32)');
+    if (decoded.length === 32) {
+      this.key = decoded;
+      return;
     }
-    this.key = decoded;
+
+    // AES-256 needs exactly 32 bytes, but a managed host generating this secret for you
+    // has no way to know that and will hand over a random string of some other length.
+    // Deriving the key rather than refusing to start keeps a one-click deployment
+    // working; the derivation is deterministic, so data stays readable across restarts.
+    if (raw.length < 16) {
+      throw new Error(
+        'FIELD_ENCRYPTION_KEY is too short to be safe. Generate one with: openssl rand -base64 32',
+      );
+    }
+    this.logger.warn(
+      'FIELD_ENCRYPTION_KEY did not decode to 32 bytes — deriving one from it. ' +
+        'For a key you control, set: openssl rand -base64 32',
+    );
+    this.key = createHash('sha256').update(raw).digest();
   }
 
   get isEnabled(): boolean {

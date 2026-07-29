@@ -1,45 +1,60 @@
-# Render — hosts the Intoto ERP backend API.
+# One-click deploy for Intoto ERP.
 #
-# Import this file in Render ("New → Blueprint") and it creates the API service.
-# The database is NOT created here: Render's free Postgres is deleted after 30 days,
-# which would take the business's data with it. Use Neon's free tier instead and paste
-# its connection string into DATABASE_URL (see DEPLOYMENT.md).
+# Render reads this file and creates everything the system needs — database, backend and
+# the screens — in a single action. Nothing to configure by hand: the pieces are wired to
+# each other below, and the secrets are generated rather than typed.
+#
+#   https://render.com/deploy?repo=https://github.com/abdulrahmansankyu-glitch/shop-intoto
+#
+# Free tier, with two limits worth knowing before you rely on it:
+#   * Services sleep after 15 minutes idle and take ~50s to wake.
+#   * The free database is REMOVED AFTER 30 DAYS. Fine for trying the system out;
+#     before you bill real customers, move to a paid database or to Neon's free tier
+#     (which persists) — see DEPLOYMENT.md.
+
+databases:
+  - name: intoto-db
+    databaseName: intoto_erp
+    user: intoto
+    plan: free
+    region: singapore # closest Render region to India
 
 services:
+  # ---------------- Backend ----------------
   - type: web
     name: intoto-api
     runtime: docker
     dockerfilePath: ./infra/docker/api.Dockerfile
     dockerContext: .
     plan: free
-    region: singapore # closest Render region to India
+    region: singapore
     healthCheckPath: /api/v1/health
-
     envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: intoto-db
+          property: connectionString
       - key: NODE_ENV
         value: production
       - key: API_PORT
         value: 4000
       - key: API_PREFIX
         value: api/v1
-
-      # Paste your Neon connection string here in the Render dashboard.
-      - key: DATABASE_URL
-        sync: false
-
-      # Generated once by Render and kept stable across deploys. Changing either of
-      # these signs every user out.
+      # Generated once and kept stable across deploys. Changing either signs everyone out.
       - key: JWT_ACCESS_SECRET
         generateValue: true
       - key: JWT_REFRESH_SECRET
         generateValue: true
+      # Encrypts supplier bank details at rest.
       - key: FIELD_ENCRYPTION_KEY
-        sync: false # must decode to exactly 32 bytes: openssl rand -base64 32
-
-      # Your Netlify URL, so the browser is allowed to call this API.
+        generateValue: true
+      # Requests reach the API through the web server's proxy, so they arrive same-origin
+      # and no CORS allowance is needed. Kept for links in emailed documents.
       - key: APP_URL
-        sync: false
-
+        fromService:
+          type: web
+          name: intoto-web
+          property: host
       - key: DEFAULT_STATE_CODE
         value: "09"
       - key: DEFAULT_TIMEZONE
@@ -48,3 +63,31 @@ services:
         value: local
       - key: AI_ENABLED
         value: false
+      # Creates the tables and loads your 3 shops, 20 suppliers and product catalogue on
+      # first boot, so the system is usable the moment it finishes deploying.
+      - key: RUN_SEED_ON_BOOT
+        value: true
+
+  # ---------------- Screens ----------------
+  - type: web
+    name: intoto-web
+    runtime: docker
+    dockerfilePath: ./infra/docker/web.Dockerfile
+    dockerContext: .
+    plan: free
+    region: singapore
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # The browser calls this server's own origin; Next proxies through to the API.
+      # That keeps the backend address a runtime value rather than something baked into
+      # the bundle at build time, and removes cross-origin requests entirely.
+      - key: NEXT_PUBLIC_API_URL
+        value: /api/v1
+      - key: API_INTERNAL_URL
+        fromService:
+          type: web
+          name: intoto-api
+          property: host
+      - key: NEXT_PUBLIC_APP_NAME
+        value: Intoto ERP
