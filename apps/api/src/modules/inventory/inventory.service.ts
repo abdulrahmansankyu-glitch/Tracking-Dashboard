@@ -499,7 +499,13 @@ export class InventoryService {
         where,
         include: {
           product: {
-            select: { id: true, sku: true, name: true, minStock: true, sellingPrice: true, colour: true, size: true },
+            // Everything the billing screen needs to price a line and compute GST
+            // locally, so adding an item to a bill costs no extra request.
+            select: {
+              id: true, sku: true, name: true, minStock: true, colour: true, size: true,
+              hsnCode: true, gstRate: true, cessRate: true, sellingPrice: true,
+              wholesalePrice: true, mrp: true, priceIncludesTax: true,
+            },
           },
           shop: { select: { id: true, name: true, code: true } },
         },

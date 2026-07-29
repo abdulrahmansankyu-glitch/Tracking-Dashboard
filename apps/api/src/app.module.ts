@@ -20,6 +20,7 @@ import { HealthModule } from './modules/health/health.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { ProductsModule } from './modules/products/products.module';
 import { SalesModule } from './modules/sales/sales.module';
+import { ShopsModule } from './modules/shops/shops.module';
 import { SuppliersModule } from './modules/suppliers/suppliers.module';
 
 /**
@@ -62,6 +63,7 @@ import { SuppliersModule } from './modules/suppliers/suppliers.module';
     HealthModule,
     AuthModule,
     CategoriesModule,
+    ShopsModule,
     SuppliersModule,
     ProductsModule,
     CustomersModule,

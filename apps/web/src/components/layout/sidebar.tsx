@@ -30,7 +30,7 @@ interface NavItem {
 
 const NAVIGATION: NavItem[] = [
   { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, ready: true },
-  { label: 'Point of Sale', href: '/pos', icon: ShoppingCart, permission: 'pos:create' },
+  { label: 'Point of Sale', href: '/pos', icon: ShoppingCart, permission: 'pos:create', ready: true },
   {
     label: 'Sales', href: '/sales', icon: Receipt, permission: 'sale:read',
     children: [
@@ -70,7 +70,7 @@ const NAVIGATION: NavItem[] = [
   },
   { label: 'Expenses', href: '/expenses', icon: FileText, permission: 'expense:read' },
   { label: 'Employees', href: '/employees', icon: Users, permission: 'employee:read' },
-  { label: 'Shops', href: '/shops', icon: Building2, permission: 'shop:read' },
+  { label: 'Shops', href: '/shops', icon: Building2, permission: 'shop:read', ready: true },
   { label: 'Reports', href: '/reports', icon: BarChart3, permission: 'report:read' },
   { label: 'AI Advisor', href: '/ai', icon: Sparkles, permission: 'ai:read' },
   { label: 'Settings', href: '/settings', icon: Settings, permission: 'settings:read' },
