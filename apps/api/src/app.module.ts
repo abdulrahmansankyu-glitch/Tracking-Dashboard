@@ -17,7 +17,9 @@ import { AuthModule } from './modules/auth/auth.module';
 import { CategoriesModule } from './modules/categories/categories.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { HealthModule } from './modules/health/health.module';
+import { InventoryModule } from './modules/inventory/inventory.module';
 import { ProductsModule } from './modules/products/products.module';
+import { SalesModule } from './modules/sales/sales.module';
 import { SuppliersModule } from './modules/suppliers/suppliers.module';
 
 /**
@@ -63,6 +65,8 @@ import { SuppliersModule } from './modules/suppliers/suppliers.module';
     SuppliersModule,
     ProductsModule,
     CustomersModule,
+    InventoryModule,
+    SalesModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
