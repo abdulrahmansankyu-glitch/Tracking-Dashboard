@@ -95,7 +95,10 @@ function int(key: string, fallback: number): number {
 
 export default (): AppConfig => ({
   env: optional('NODE_ENV', 'development'),
-  port: int('API_PORT', 4000),
+  // Managed hosts assign the port at runtime through PORT and route to it; listening on
+  // anything else makes the service look dead to their health checks. API_PORT stays as
+  // the local-development default.
+  port: int('PORT', int('API_PORT', 4000)),
   apiPrefix: optional('API_PREFIX', 'api/v1'),
   appName: optional('APP_NAME', 'Intoto ERP'),
   appUrl: optional('APP_URL', 'http://localhost:3000'),

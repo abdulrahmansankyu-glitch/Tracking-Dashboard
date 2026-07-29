@@ -36,8 +36,6 @@ services:
           property: connectionString
       - key: NODE_ENV
         value: production
-      - key: API_PORT
-        value: 4000
       - key: API_PREFIX
         value: api/v1
       # Generated once and kept stable across deploys. Changing either signs everyone out.
