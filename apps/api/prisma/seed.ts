@@ -433,6 +433,105 @@ async function main(): Promise<void> {
   }
   console.log(`  Suppliers: ${supplierSeed.length}`);
 
+  // ---------------------------------------------------------------------------
+  // Products — a representative slice of the Intoto catalogue
+  // ---------------------------------------------------------------------------
+  const productSeed: Array<{
+    sku: string; name: string; category: string; supplier: string; hsn: string;
+    gst: number; cost: number; price: number; mrp: number; unit: string;
+    colour?: string; size?: string; fabric?: string; season?: string; min: number;
+  }> = [
+    // Sarees — HSN 6211, value-dependent slab
+    { sku: 'SAR-BAN-001', name: 'Banarasi Silk Saree — Zari Border', category: 'banarasi-saree', supplier: 'SUP001', hsn: '6211', gst: 12, cost: 3200, price: 5400, mrp: 6000, unit: 'PCS', colour: 'Maroon', fabric: 'Silk', season: 'WEDDING', min: 20 },
+    { sku: 'SAR-BAN-002', name: 'Banarasi Silk Saree — Katan', category: 'banarasi-saree', supplier: 'SUP001', hsn: '6211', gst: 12, cost: 4100, price: 6800, mrp: 7500, unit: 'PCS', colour: 'Red', fabric: 'Silk', season: 'WEDDING', min: 15 },
+    { sku: 'SAR-COT-001', name: 'Cotton Saree — Handloom', category: 'cotton-saree', supplier: 'SUP009', hsn: '6211', gst: 5, cost: 420, price: 750, mrp: 900, unit: 'PCS', colour: 'Blue', fabric: 'Cotton', season: 'SUMMER', min: 40 },
+    { sku: 'SAR-COT-002', name: 'Cotton Saree — Printed', category: 'cotton-saree', supplier: 'SUP009', hsn: '6211', gst: 5, cost: 380, price: 680, mrp: 800, unit: 'PCS', colour: 'Green', fabric: 'Cotton', season: 'SUMMER', min: 40 },
+    { sku: 'SAR-WED-001', name: 'Wedding Saree — Heavy Work', category: 'wedding-saree', supplier: 'SUP013', hsn: '6211', gst: 12, cost: 6500, price: 11500, mrp: 13000, unit: 'PCS', colour: 'Pink', fabric: 'Silk', season: 'WEDDING', min: 10 },
+    { sku: 'SAR-SLK-001', name: 'Bhagalpur Silk Saree', category: 'silk-saree', supplier: 'SUP020', hsn: '6211', gst: 12, cost: 2200, price: 3900, mrp: 4400, unit: 'PCS', colour: 'Golden', fabric: 'Silk', season: 'FESTIVE', min: 20 },
+
+    // Men wear — HSN 6203 / 6205 / 6207
+    { sku: 'MEN-SHR-001', name: 'Sherwani — Embroidered', category: 'sherwani', supplier: 'SUP017', hsn: '6203', gst: 12, cost: 5800, price: 9800, mrp: 11000, unit: 'PCS', colour: 'Cream', size: 'L', fabric: 'Silk Blend', season: 'WEDDING', min: 8 },
+    { sku: 'MEN-SHR-002', name: 'Sherwani — Classic', category: 'sherwani', supplier: 'SUP017', hsn: '6203', gst: 12, cost: 4200, price: 7200, mrp: 8000, unit: 'PCS', colour: 'Maroon', size: 'XL', fabric: 'Brocade', season: 'WEDDING', min: 8 },
+    { sku: 'MEN-GRM-001', name: 'Groom Set — Sherwani with Dupatta', category: 'groom-sets', supplier: 'SUP017', hsn: '6203', gst: 12, cost: 9500, price: 16500, mrp: 18500, unit: 'SET', colour: 'Ivory', size: 'L', season: 'WEDDING', min: 5 },
+    { sku: 'MEN-KUR-001', name: 'Cotton Kurta — Regular Fit', category: 'kurta', supplier: 'SUP019', hsn: '6207', gst: 5, cost: 340, price: 620, mrp: 750, unit: 'PCS', colour: 'White', size: 'M', fabric: 'Cotton', min: 60 },
+    { sku: 'MEN-KUR-002', name: 'Silk Kurta — Festive', category: 'kurta', supplier: 'SUP019', hsn: '6207', gst: 12, cost: 780, price: 1350, mrp: 1600, unit: 'PCS', colour: 'Gold', size: 'L', fabric: 'Silk', season: 'FESTIVE', min: 30 },
+    { sku: 'MEN-PAJ-001', name: 'Cotton Pajama', category: 'pajama', supplier: 'SUP019', hsn: '6207', gst: 5, cost: 180, price: 340, mrp: 420, unit: 'PCS', colour: 'White', size: 'M', fabric: 'Cotton', min: 60 },
+    { sku: 'MEN-SHT-001', name: 'Formal Shirt — Cotton', category: 'shirt', supplier: 'SUP005', hsn: '6205', gst: 5, cost: 420, price: 780, mrp: 950, unit: 'PCS', colour: 'Sky Blue', size: 'M', fabric: 'Cotton', min: 50 },
+    { sku: 'MEN-PNT-001', name: 'Formal Trousers', category: 'pant', supplier: 'SUP010', hsn: '6203', gst: 5, cost: 560, price: 980, mrp: 1200, unit: 'PCS', colour: 'Charcoal', size: '34', fabric: 'Poly Viscose', min: 40 },
+
+    // Ladies wear
+    { sku: 'LAD-SLW-001', name: 'Salwar Suit — Unstitched', category: 'salwar-suit', supplier: 'SUP007', hsn: '6204', gst: 5, cost: 480, price: 890, mrp: 1100, unit: 'SET', colour: 'Peach', fabric: 'Cotton', min: 40 },
+    { sku: 'LAD-LEH-001', name: 'Lehenga — Bridal', category: 'lehenga', supplier: 'SUP008', hsn: '6204', gst: 12, cost: 12000, price: 21000, mrp: 24000, unit: 'SET', colour: 'Red', size: 'M', season: 'WEDDING', min: 4 },
+    { sku: 'LAD-KRT-001', name: 'Chikankari Kurti', category: 'kurti', supplier: 'SUP015', hsn: '6206', gst: 5, cost: 390, price: 720, mrp: 890, unit: 'PCS', colour: 'White', size: 'M', fabric: 'Cotton', min: 45 },
+    { sku: 'LAD-DRS-001', name: 'Dress Material — Printed', category: 'dress-material', supplier: 'SUP007', hsn: '6204', gst: 5, cost: 310, price: 560, mrp: 700, unit: 'SET', colour: 'Yellow', fabric: 'Cotton', min: 50 },
+
+    // Winter wear — HSN 6301 / 6214
+    { sku: 'WIN-BLK-001', name: 'Woollen Blanket — Double', category: 'blankets', supplier: 'SUP011', hsn: '6301', gst: 12, cost: 780, price: 1350, mrp: 1600, unit: 'PCS', colour: 'Grey', fabric: 'Wool', season: 'WINTER', min: 30 },
+    { sku: 'WIN-SHW-001', name: 'Kashmiri Shawl — Pashmina', category: 'kashmiri-shawls', supplier: 'SUP004', hsn: '6214', gst: 12, cost: 2400, price: 4200, mrp: 4800, unit: 'PCS', colour: 'Beige', fabric: 'Pashmina', season: 'WINTER', min: 25 },
+    { sku: 'WIN-STL-001', name: 'Ladies Stole — Woollen', category: 'ladies-stoles', supplier: 'SUP003', hsn: '6214', gst: 5, cost: 260, price: 480, mrp: 600, unit: 'PCS', colour: 'Pink', fabric: 'Wool', season: 'WINTER', min: 35 },
+    { sku: 'WIN-STL-002', name: 'Winter Stole — Printed', category: 'winter-stoles', supplier: 'SUP003', hsn: '6214', gst: 5, cost: 220, price: 420, mrp: 520, unit: 'PCS', colour: 'Navy', fabric: 'Acrylic', season: 'WINTER', min: 35 },
+
+    // Fabric rolls — sold by the metre, flat 5%
+    { sku: 'FAB-COT-001', name: 'Cotton Fabric Roll — 44 inch', category: 'cotton-rolls', supplier: 'SUP006', hsn: '5208', gst: 5, cost: 110, price: 185, mrp: 220, unit: 'MTR', colour: 'White', fabric: 'Cotton', min: 200 },
+    { sku: 'FAB-SLK-001', name: 'Silk Fabric Roll — 44 inch', category: 'silk-rolls', supplier: 'SUP001', hsn: '5007', gst: 5, cost: 340, price: 560, mrp: 650, unit: 'MTR', colour: 'Gold', fabric: 'Silk', min: 100 },
+    { sku: 'FAB-SYN-001', name: 'Synthetic Fabric Roll', category: 'synthetic-rolls', supplier: 'SUP002', hsn: '5407', gst: 5, cost: 78, price: 140, mrp: 175, unit: 'MTR', colour: 'Assorted', fabric: 'Polyester', min: 250 },
+
+    // Uniforms & children
+    { sku: 'UNI-SCH-001', name: 'School Uniform Set — Boys', category: 'school-uniform', supplier: 'SUP012', hsn: '6203', gst: 5, cost: 340, price: 600, mrp: 720, unit: 'SET', colour: 'Navy', size: '28', min: 80 },
+    { sku: 'UNI-COL-001', name: 'College Uniform Set', category: 'college-uniform', supplier: 'SUP012', hsn: '6203', gst: 5, cost: 460, price: 820, mrp: 980, unit: 'SET', colour: 'Grey', size: '32', min: 50 },
+    { sku: 'CHD-BOY-001', name: 'Boys Ethnic Kurta Set', category: 'boys-wear', supplier: 'SUP016', hsn: '6209', gst: 5, cost: 290, price: 540, mrp: 660, unit: 'SET', colour: 'Blue', size: '6-7Y', season: 'FESTIVE', min: 40 },
+    { sku: 'CHD-GRL-001', name: 'Girls Party Frock', category: 'girls-wear', supplier: 'SUP016', hsn: '6209', gst: 5, cost: 340, price: 620, mrp: 760, unit: 'PCS', colour: 'Pink', size: '5-6Y', season: 'FESTIVE', min: 40 },
+
+    // Accessories
+    { sku: 'ACC-BLT-001', name: 'Leather Belt — Formal', category: 'belts', supplier: 'SUP018', hsn: '4202', gst: 18, cost: 180, price: 350, mrp: 450, unit: 'PCS', colour: 'Black', min: 30 },
+    { sku: 'ACC-TIE-001', name: 'Silk Tie', category: 'ties', supplier: 'SUP018', hsn: '6217', gst: 5, cost: 120, price: 250, mrp: 320, unit: 'PCS', colour: 'Maroon', min: 25 },
+  ];
+
+  let productCount = 0;
+  for (const item of productSeed) {
+    const category = await prisma.category.findUnique({
+      where: { organizationId_slug: { organizationId: ORG_ID, slug: item.category } },
+    });
+    const supplier = await prisma.supplier.findUnique({
+      where: { organizationId_code: { organizationId: ORG_ID, code: item.supplier } },
+    });
+    const unit = await prisma.unitOfMeasure.findUnique({ where: { code: item.unit } });
+    if (!category) {
+      console.warn(`  ! category "${item.category}" not found for ${item.sku}`);
+      continue;
+    }
+
+    await prisma.product.upsert({
+      where: { organizationId_sku: { organizationId: ORG_ID, sku: item.sku } },
+      update: {},
+      create: {
+        organizationId: ORG_ID,
+        sku: item.sku,
+        // A scannable EAN-13-shaped code so the POS barcode path is exercisable.
+        barcode: `890${String(2000000 + productCount).padStart(10, '0')}`,
+        name: item.name,
+        categoryId: category.id,
+        supplierId: supplier?.id,
+        unitId: unit?.id,
+        hsnCode: item.hsn,
+        gstRate: item.gst,
+        colour: item.colour,
+        size: item.size,
+        fabric: item.fabric,
+        season: (item.season ?? 'ALL_SEASON') as never,
+        purchaseCost: item.cost,
+        sellingPrice: item.price,
+        mrp: item.mrp,
+        // Retail prices in India are quoted inclusive of GST.
+        priceIncludesTax: true,
+        minStock: item.min,
+        isActive: true,
+      } as never,
+    });
+    productCount += 1;
+  }
+  console.log(`  Products: ${productCount}`);
+
   console.log('\nSeed complete.');
   console.log(`  Sign in: owner@intoto.in / ${DEFAULT_PASSWORD}`);
   console.log('  Change this password immediately in any real deployment.\n');

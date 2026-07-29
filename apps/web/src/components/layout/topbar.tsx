@@ -1,6 +1,7 @@
 'use client';
 
 import { Bell, LogOut, Menu, Moon, Search, Store, Sun } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -8,9 +9,11 @@ import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth-store';
 
 export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
+  const router = useRouter();
   const { user, activeShopId, setActiveShop, logout } = useAuthStore();
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [shopMenuOpen, setShopMenuOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     const stored = window.localStorage.getItem('intoto.theme');
@@ -43,18 +46,34 @@ export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
         <Menu className="h-5 w-5" />
       </button>
 
-      <div className="relative hidden max-w-md flex-1 sm:block">
+      {/*
+        Routes to the product catalogue with the term applied. A true cross-entity
+        search needs a server-side endpoint spanning products, invoices and customers;
+        until that exists this searches the one place it can actually answer, and the
+        placeholder says so rather than implying more than it does.
+      */}
+      <form
+        role="search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const term = searchTerm.trim();
+          if (term) router.push(`/products?search=${encodeURIComponent(term)}`);
+        }}
+        className="relative hidden max-w-md flex-1 sm:block"
+      >
         <Search
           className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]"
           aria-hidden
         />
         <input
           type="search"
-          placeholder="Search products, invoices, customers…"
-          aria-label="Global search"
+          value={searchTerm}
+          onChange={(event) => setSearchTerm(event.target.value)}
+          placeholder="Search products by name, SKU or barcode…"
+          aria-label="Search products"
           className="h-10 w-full rounded-xl border border-[var(--glass-ring)] bg-[var(--glass-bg)] pl-10 pr-3 text-sm placeholder:text-[var(--text-muted)] focus:border-[var(--color-brand-400)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-500)]/20"
         />
-      </div>
+      </form>
 
       <div className="ml-auto flex items-center gap-1.5">
         {/* Shop switcher — the control that makes multi-branch usable */}

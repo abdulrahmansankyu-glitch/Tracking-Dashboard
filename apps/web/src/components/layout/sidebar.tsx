@@ -19,18 +19,24 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
   /** Hidden when the user lacks this permission */
   permission?: Permission;
-  children?: Array<{ label: string; href: string; permission?: Permission }>;
+  /**
+   * False until the page exists. Unbuilt entries render as a muted label with a
+   * "Soon" badge instead of a link — Next would otherwise prefetch them on hover and
+   * a click would land the user on a 404.
+   */
+  ready?: boolean;
+  children?: Array<{ label: string; href: string; permission?: Permission; ready?: boolean }>;
 }
 
 const NAVIGATION: NavItem[] = [
-  { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+  { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, ready: true },
   { label: 'Point of Sale', href: '/pos', icon: ShoppingCart, permission: 'pos:create' },
   {
     label: 'Sales', href: '/sales', icon: Receipt, permission: 'sale:read',
     children: [
       { label: 'Invoices', href: '/sales/invoices' },
       { label: 'Returns', href: '/sales/returns' },
-      { label: 'Customers', href: '/customers', permission: 'customer:read' },
+      { label: 'Customers', href: '/customers', permission: 'customer:read', ready: true },
     ],
   },
   {
@@ -42,14 +48,14 @@ const NAVIGATION: NavItem[] = [
       { label: 'Cycle Counts', href: '/inventory/cycle-counts' },
     ],
   },
-  { label: 'Products', href: '/products', icon: Package, permission: 'product:read' },
+  { label: 'Products', href: '/products', icon: Package, permission: 'product:read', ready: true },
   {
     label: 'Purchase', href: '/purchase', icon: Truck, permission: 'purchase_order:read',
     children: [
       { label: 'Orders', href: '/purchase/orders' },
       { label: 'Goods Receipts', href: '/purchase/receipts' },
       { label: 'Bills', href: '/purchase/bills' },
-      { label: 'Suppliers', href: '/suppliers', permission: 'supplier:read' },
+      { label: 'Suppliers', href: '/suppliers', permission: 'supplier:read', ready: true },
     ],
   },
   {
@@ -151,7 +157,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                         className={cn('h-4 w-4 transition-transform', isExpanded && 'rotate-180')}
                       />
                     </button>
-                  ) : (
+                  ) : item.ready ? (
                     <Link
                       href={item.href}
                       onClick={onClose}
@@ -166,6 +172,18 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                       <Icon className="h-[18px] w-[18px] shrink-0" />
                       <span>{item.label}</span>
                     </Link>
+                  ) : (
+                    <span
+                      aria-disabled
+                      title={`${item.label} is not built yet`}
+                      className="flex cursor-not-allowed items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-[var(--text-muted)] opacity-60"
+                    >
+                      <Icon className="h-[18px] w-[18px] shrink-0" />
+                      <span className="flex-1">{item.label}</span>
+                      <span className="rounded bg-[var(--glass-bg)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide">
+                        Soon
+                      </span>
+                    </span>
                   )}
 
                   <AnimatePresence initial={false}>
@@ -179,19 +197,29 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                       >
                         {children.map((child) => (
                           <li key={child.href}>
-                            <Link
-                              href={child.href}
-                              onClick={onClose}
-                              aria-current={pathname === child.href ? 'page' : undefined}
-                              className={cn(
-                                'block rounded-lg px-3 py-2 text-[13px] transition-colors',
-                                pathname === child.href
-                                  ? 'font-medium text-[var(--color-brand-600)]'
-                                  : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]',
-                              )}
-                            >
-                              {child.label}
-                            </Link>
+                            {child.ready ? (
+                              <Link
+                                href={child.href}
+                                onClick={onClose}
+                                aria-current={pathname === child.href ? 'page' : undefined}
+                                className={cn(
+                                  'block rounded-lg px-3 py-2 text-[13px] transition-colors',
+                                  pathname === child.href
+                                    ? 'font-medium text-[var(--color-brand-600)]'
+                                    : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]',
+                                )}
+                              >
+                                {child.label}
+                              </Link>
+                            ) : (
+                              <span
+                                aria-disabled
+                                className="flex cursor-not-allowed items-center justify-between rounded-lg px-3 py-2 text-[13px] text-[var(--text-muted)] opacity-60"
+                              >
+                                {child.label}
+                                <span className="text-[9px] font-semibold uppercase tracking-wide">Soon</span>
+                              </span>
+                            )}
                           </li>
                         ))}
                       </motion.ul>
