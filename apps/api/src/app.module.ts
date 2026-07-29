@@ -14,6 +14,7 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { ShopScopeGuard } from './common/guards/shop-scope.guard';
 import { AuthModule } from './modules/auth/auth.module';
+import { CategoriesModule } from './modules/categories/categories.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { HealthModule } from './modules/health/health.module';
 import { ProductsModule } from './modules/products/products.module';
@@ -58,6 +59,7 @@ import { SuppliersModule } from './modules/suppliers/suppliers.module';
     CommonModule,
     HealthModule,
     AuthModule,
+    CategoriesModule,
     SuppliersModule,
     ProductsModule,
     CustomersModule,

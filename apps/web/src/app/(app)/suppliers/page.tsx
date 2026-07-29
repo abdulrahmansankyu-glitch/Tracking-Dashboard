@@ -2,7 +2,10 @@
 
 import { Star } from 'lucide-react';
 
+import type { ResourceField } from '@/components/data/resource-form';
 import { ResourcePage, type ResourceColumn } from '@/components/data/resource-page';
+import { INDIAN_STATES } from '@intoto/shared';
+
 import { formatCompact, formatNumber } from '@/lib/utils';
 
 const columns: ResourceColumn[] = [
@@ -66,6 +69,32 @@ const columns: ResourceColumn[] = [
   },
 ];
 
+
+// Only what is needed to add a supplier at the counter. Ratings, purchase totals and
+// outstanding balances are computed by the system, never typed in.
+const formFields: ResourceField[] = [
+  { name: 'companyName', label: 'Company name', required: true, section: 'Business', wide: true },
+  { name: 'ownerName', label: 'Owner / contact person', section: 'Business' },
+  { name: 'category', label: 'Supplies', placeholder: 'Sarees, Fabric, Winter Wear…', section: 'Business' },
+  { name: 'gstin', label: 'GSTIN', hint: '15 characters — checked against its check digit', section: 'Business' },
+  { name: 'pan', label: 'PAN', section: 'Business' },
+
+  { name: 'phone', label: 'Phone', type: 'tel', required: true, section: 'Contact' },
+  { name: 'alternatePhone', label: 'Alternate phone', type: 'tel', section: 'Contact' },
+  { name: 'email', label: 'Email', type: 'email', section: 'Contact' },
+
+  { name: 'address.line1', label: 'Address', required: true, section: 'Address', wide: true },
+  { name: 'address.city', label: 'City', required: true, section: 'Address' },
+  { name: 'address.pincode', label: 'PIN code', required: true, section: 'Address' },
+  { name: 'address.stateCode', label: 'State', type: 'select', required: true, section: 'Address',
+    options: INDIAN_STATES.map((s) => ({ value: s.code, label: s.name })) },
+
+  { name: 'creditPeriodDays', label: 'Credit period (days)', type: 'number', section: 'Terms',
+    hint: 'Days before payment is due', defaultValue: 30 },
+  { name: 'creditLimit', label: 'Credit limit (₹)', type: 'currency', section: 'Terms' },
+  { name: 'notes', label: 'Notes', type: 'textarea', section: 'Terms' },
+];
+
 export default function SuppliersPage() {
   return (
     <ResourcePage
@@ -77,6 +106,7 @@ export default function SuppliersPage() {
       columns={columns}
       defaultSortBy="companyName"
       searchPlaceholder="Search by company, owner, phone, GSTIN or city…"
+      formFields={formFields}
     />
   );
 }

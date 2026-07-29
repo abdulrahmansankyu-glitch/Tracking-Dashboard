@@ -1,5 +1,6 @@
 'use client';
 
+import type { ResourceField } from '@/components/data/resource-form';
 import { ResourcePage, type ResourceColumn } from '@/components/data/resource-page';
 import { cn, formatCurrency, formatNumber } from '@/lib/utils';
 
@@ -71,6 +72,44 @@ const columns: ResourceColumn[] = [
   },
 ];
 
+
+// The fields a shopkeeper actually fills in when adding stock. Everything else on the
+// product model keeps its default and can be edited later.
+const formFields: ResourceField[] = [
+  { name: 'name', label: 'Product name', required: true, section: 'Product', wide: true },
+  { name: 'sku', label: 'SKU / item code', required: true, section: 'Product' },
+  { name: 'barcode', label: 'Barcode', section: 'Product', hint: 'Scan or type — used at the counter' },
+  { name: 'categoryId', label: 'Category', type: 'select', required: true, section: 'Product',
+    optionsFrom: { path: 'categories', labelKey: 'name' } },
+  { name: 'supplierId', label: 'Supplier', type: 'select', section: 'Product',
+    optionsFrom: { path: 'suppliers', labelKey: 'companyName' } },
+
+  { name: 'colour', label: 'Colour', section: 'Details' },
+  { name: 'size', label: 'Size', section: 'Details' },
+  { name: 'fabric', label: 'Fabric', section: 'Details' },
+  { name: 'design', label: 'Design / pattern', section: 'Details' },
+
+  { name: 'purchaseCost', label: 'Purchase cost (₹)', type: 'currency', section: 'Pricing' },
+  { name: 'sellingPrice', label: 'Selling price (₹)', type: 'currency', section: 'Pricing' },
+  { name: 'mrp', label: 'MRP (₹)', type: 'currency', section: 'Pricing',
+    hint: 'Selling price cannot exceed this' },
+  { name: 'wholesalePrice', label: 'Wholesale price (₹)', type: 'currency', section: 'Pricing' },
+
+  { name: 'hsnCode', label: 'HSN code', section: 'Tax', hint: '4, 6 or 8 digits — needed on GST invoices' },
+  { name: 'gstRate', label: 'GST %', type: 'number', section: 'Tax', defaultValue: 5,
+    hint: 'Apparel: 5% up to ₹1,000, 12% above' },
+  { name: 'unitCode', label: 'Sold by', type: 'select', section: 'Tax', defaultValue: 'PCS',
+    options: [
+      { value: 'PCS', label: 'Pieces' }, { value: 'MTR', label: 'Metres' },
+      { value: 'SET', label: 'Sets' }, { value: 'KGS', label: 'Kilograms' },
+      { value: 'ROL', label: 'Rolls' }, { value: 'DOZ', label: 'Dozen' },
+    ] },
+
+  { name: 'minStock', label: 'Minimum stock', type: 'number', section: 'Stock',
+    hint: 'Alerts you when stock drops to this level' },
+  { name: 'shelfLocation', label: 'Shelf location', section: 'Stock' },
+];
+
 export default function ProductsPage() {
   return (
     <ResourcePage
@@ -82,6 +121,7 @@ export default function ProductsPage() {
       columns={columns}
       defaultSortBy="name"
       searchPlaceholder="Search by name, SKU, barcode, colour or fabric…"
+      formFields={formFields}
     />
   );
 }

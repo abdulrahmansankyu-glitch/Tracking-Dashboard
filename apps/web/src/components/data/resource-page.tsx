@@ -3,18 +3,20 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Archive, ArchiveRestore, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
-  Download, FileSpreadsheet, FileText, History, Loader2, MoreVertical, Plus,
-  Printer, Search, Upload, X,
+  Download, FileSpreadsheet, FileText, History, Loader2, MoreVertical, Pencil, Plus,
+  Printer, Search, Trash2, Upload, X,
 } from 'lucide-react';
 import { useState } from 'react';
 import type { Permission } from '@intoto/shared';
 
+import { ConfirmDialog, ResourceForm, type ResourceField } from '@/components/data/resource-form';
 import { Button } from '@/components/ui/button';
 import { GlassCard } from '@/components/ui/glass-card';
 import { Input } from '@/components/ui/input';
 import {
   useResourceExport, useResourceHistory, useResourceMutations, useResourceQuery,
 } from '@/hooks/use-resource';
+import { ApiError } from '@/lib/api';
 import { cn, formatDateTime } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth-store';
 
@@ -42,6 +44,8 @@ export interface ResourcePageProps {
   searchPlaceholder?: string;
   /** Rendered above the table — resource-specific filter controls */
   filters?: React.ReactNode;
+  /** Fields shown in the Add/Edit drawer. Omit to make the resource read-only. */
+  formFields?: ResourceField[];
 }
 
 /**
@@ -53,18 +57,43 @@ export interface ResourcePageProps {
  */
 export function ResourcePage({
   path, title, subtitle, label, resource, columns,
-  defaultSortBy, searchPlaceholder, filters,
+  defaultSortBy, searchPlaceholder, filters, formFields,
 }: ResourcePageProps) {
   const can = useAuthStore((state) => state.can);
   const { state, update, toggleSort, query, params } = useResourceQuery(path, {
     sortBy: defaultSortBy,
   });
-  const { archive, restore } = useResourceMutations(path, label);
+  const { create, update: updateRecord, archive, restore, remove } = useResourceMutations(path, label);
   const exportAs = useResourceExport(path, label);
 
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<Record<string, unknown> | null>(null);
+  const [formErrors, setFormErrors] = useState<Record<string, string[]> | undefined>();
+  const [deleting, setDeleting] = useState<Record<string, unknown> | null>(null);
+
+  const canEdit = Boolean(formFields) && can(`${resource}:update` as Permission);
+  const canCreate = Boolean(formFields) && can(`${resource}:create` as Permission);
+  const canDelete = can(`${resource}:delete` as Permission);
+
+  async function submitForm(values: Record<string, unknown>) {
+    setFormErrors(undefined);
+    try {
+      if (editing) {
+        await updateRecord.mutateAsync({ id: editing.id as string, body: values });
+      } else {
+        await create.mutateAsync(values);
+      }
+      setFormOpen(false);
+      setEditing(null);
+    } catch (error) {
+      // Field-keyed errors from the API are mapped back onto the inputs; the toast
+      // raised by the mutation hook carries the summary.
+      if (error instanceof ApiError && error.details) setFormErrors(error.details);
+    }
+  }
 
   const rows = query.data?.data ?? [];
   const meta = query.data?.meta;
@@ -142,8 +171,15 @@ export function ResourcePage({
             </div>
           )}
 
-          {can(`${resource}:create` as Permission) && (
-            <Button size="sm">
+          {canCreate && (
+            <Button
+              size="sm"
+              onClick={() => {
+                setEditing(null);
+                setFormErrors(undefined);
+                setFormOpen(true);
+              }}
+            >
               <Plus className="h-4 w-4" aria-hidden />
               New {label}
             </Button>
@@ -305,6 +341,22 @@ export function ResourcePage({
                           <>
                             <div className="fixed inset-0 z-10" onClick={() => setOpenMenuId(null)} aria-hidden />
                             <div role="menu" className="glass-strong absolute right-0 z-20 mt-1 w-48 rounded-xl p-1.5 text-left">
+                              {canEdit && !isArchived && (
+                                <button
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setEditing(row);
+                                    setFormErrors(undefined);
+                                    setFormOpen(true);
+                                    setOpenMenuId(null);
+                                  }}
+                                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-[var(--glass-bg)]"
+                                >
+                                  <Pencil className="h-4 w-4 text-[var(--text-muted)]" aria-hidden />
+                                  Edit
+                                </button>
+                              )}
+
                               <button
                                 role="menuitem"
                                 onClick={() => {
@@ -344,6 +396,20 @@ export function ResourcePage({
                                       Archive
                                     </button>
                                   )}
+
+                              {canDelete && (
+                                <button
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setDeleting(row);
+                                    setOpenMenuId(null);
+                                  }}
+                                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-[var(--status-critical)] hover:bg-[var(--status-critical)]/10"
+                                >
+                                  <Trash2 className="h-4 w-4" aria-hidden />
+                                  Delete
+                                </button>
+                              )}
                             </div>
                           </>
                         )}
@@ -405,6 +471,39 @@ export function ResourcePage({
       </GlassCard>
 
       <AuditDrawer path={path} id={historyId} onClose={() => setHistoryId(null)} />
+
+      {formFields && (
+        <ResourceForm
+          open={formOpen}
+          onClose={() => {
+            setFormOpen(false);
+            setEditing(null);
+            setFormErrors(undefined);
+          }}
+          fields={formFields}
+          record={editing}
+          label={label}
+          saving={create.isPending || updateRecord.isPending}
+          onSubmit={submitForm}
+          errors={formErrors}
+        />
+      )}
+
+      <ConfirmDialog
+        open={Boolean(deleting)}
+        title={`Delete this ${label.toLowerCase()}?`}
+        message={
+          `“${String(deleting?.[Object.keys(deleting ?? {}).includes('companyName') ? 'companyName' : 'name'] ?? '')}” will be hidden everywhere but kept in the database, ` +
+          `so past documents that reference it still open. An admin can restore it. ` +
+          `Records already used by invoices or bills cannot be deleted — archive those instead.`
+        }
+        busy={remove.isPending}
+        onCancel={() => setDeleting(null)}
+        onConfirm={() => {
+          if (deleting) remove.mutate({ id: deleting.id as string });
+          setDeleting(null);
+        }}
+      />
     </div>
   );
 }

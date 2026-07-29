@@ -1,6 +1,9 @@
 'use client';
 
+import type { ResourceField } from '@/components/data/resource-form';
 import { ResourcePage, type ResourceColumn } from '@/components/data/resource-page';
+import { INDIAN_STATES } from '@intoto/shared';
+
 import { formatCompact, formatDate, formatNumber } from '@/lib/utils';
 
 const TYPE_ACCENT: Record<string, number> = {
@@ -81,6 +84,36 @@ const columns: ResourceColumn[] = [
   },
 ];
 
+
+// Lifetime value, order count and loyalty points are computed from sales — never typed.
+const formFields: ResourceField[] = [
+  { name: 'name', label: 'Customer name', required: true, section: 'Customer', wide: true },
+  { name: 'phone', label: 'Phone', type: 'tel', required: true, section: 'Customer',
+    hint: 'Used for WhatsApp bills and reminders' },
+  { name: 'type', label: 'Customer type', type: 'select', required: true, section: 'Customer',
+    defaultValue: 'RETAIL',
+    options: [
+      { value: 'RETAIL', label: 'Retail' }, { value: 'WHOLESALE', label: 'Wholesale' },
+      { value: 'REGULAR', label: 'Regular' }, { value: 'VIP', label: 'VIP' },
+      { value: 'CORPORATE', label: 'Corporate' },
+    ] },
+  { name: 'email', label: 'Email', type: 'email', section: 'Customer' },
+  { name: 'gstin', label: 'GSTIN', section: 'Customer',
+    hint: 'Required for wholesale customers claiming input credit' },
+
+  { name: 'address.line1', label: 'Address', section: 'Address', wide: true },
+  { name: 'address.city', label: 'City', section: 'Address' },
+  { name: 'address.pincode', label: 'PIN code', section: 'Address' },
+  { name: 'address.stateCode', label: 'State', type: 'select', section: 'Address',
+    options: INDIAN_STATES.map((s) => ({ value: s.code, label: s.name })) },
+
+  { name: 'birthday', label: 'Birthday', type: 'date', section: 'Relationship' },
+  { name: 'anniversary', label: 'Anniversary', type: 'date', section: 'Relationship' },
+  { name: 'creditLimit', label: 'Credit limit (₹)', type: 'currency', section: 'Relationship' },
+  { name: 'creditPeriodDays', label: 'Credit period (days)', type: 'number', section: 'Relationship' },
+  { name: 'notes', label: 'Notes', type: 'textarea', section: 'Relationship' },
+];
+
 export default function CustomersPage() {
   return (
     <ResourcePage
@@ -92,6 +125,7 @@ export default function CustomersPage() {
       columns={columns}
       defaultSortBy="name"
       searchPlaceholder="Search by name, phone, email or GSTIN…"
+      formFields={formFields}
     />
   );
 }
