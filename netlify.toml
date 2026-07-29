@@ -1,0 +1,29 @@
+# Netlify — hosts the Intoto ERP frontend (the screens).
+#
+# Netlify cannot run the backend API or the database. It serves the Next.js app, which
+# calls the API hosted elsewhere (see DEPLOYMENT.md). Set NEXT_PUBLIC_API_URL in the
+# Netlify dashboard to your API's public URL, or the app will try to reach localhost and
+# every screen will sit empty.
+
+[build]
+  base = "."
+  command = "pnpm install --no-frozen-lockfile && pnpm --filter @intoto/shared build && pnpm --filter @intoto/web build"
+  publish = "apps/web/.next"
+
+[build.environment]
+  NODE_VERSION = "22"
+  PNPM_VERSION = "10"
+  # The web build does not need the database; skip Prisma's postinstall download.
+  PRISMA_SKIP_POSTINSTALL_GENERATE = "true"
+
+# Netlify's Next.js runtime handles the App Router, server components and image
+# optimisation. Without it the build produces files Netlify cannot serve.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"

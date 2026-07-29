@@ -1,0 +1,50 @@
+# Render — hosts the Intoto ERP backend API.
+#
+# Import this file in Render ("New → Blueprint") and it creates the API service.
+# The database is NOT created here: Render's free Postgres is deleted after 30 days,
+# which would take the business's data with it. Use Neon's free tier instead and paste
+# its connection string into DATABASE_URL (see DEPLOYMENT.md).
+
+services:
+  - type: web
+    name: intoto-api
+    runtime: docker
+    dockerfilePath: ./infra/docker/api.Dockerfile
+    dockerContext: .
+    plan: free
+    region: singapore # closest Render region to India
+    healthCheckPath: /api/v1/health
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_PORT
+        value: 4000
+      - key: API_PREFIX
+        value: api/v1
+
+      # Paste your Neon connection string here in the Render dashboard.
+      - key: DATABASE_URL
+        sync: false
+
+      # Generated once by Render and kept stable across deploys. Changing either of
+      # these signs every user out.
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: FIELD_ENCRYPTION_KEY
+        sync: false # must decode to exactly 32 bytes: openssl rand -base64 32
+
+      # Your Netlify URL, so the browser is allowed to call this API.
+      - key: APP_URL
+        sync: false
+
+      - key: DEFAULT_STATE_CODE
+        value: "09"
+      - key: DEFAULT_TIMEZONE
+        value: Asia/Kolkata
+      - key: STORAGE_DRIVER
+        value: local
+      - key: AI_ENABLED
+        value: false
