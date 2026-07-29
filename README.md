@@ -2,7 +2,11 @@
 
 AI-powered ERP for **Intoto** — clothing wholesale & retail, India. Built to run 3 shops today and an unlimited number of branches without an architecture change.
 
-> **Status:** foundation complete and verified (schema applies, API boots, health check green). Domain modules, frontend and docs are being built module by module — see [Roadmap](#roadmap).
+> **Status:** you can run the shop on it. Stock in, sell over the counter with correct
+> GST, and see real profit. Verified end to end in a browser, not just written.
+>
+> **New here? Read [DEPLOYMENT.md](DEPLOYMENT.md)** — it covers running it on your own
+> computer and putting it online on free hosting.
 
 ---
 
@@ -121,22 +125,29 @@ pnpm db:seed          # demo data: 3 shops, 20 suppliers
 
 ---
 
-## Roadmap
+## What works
 
-- [x] Monorepo, Docker, shared GST/money/RBAC package
-- [x] Database schema — 60+ models covering every module in the spec
-- [x] API core — guards, audit, generic CRUD, Excel/PDF export, Excel import, gap-free numbering, field encryption, storage
-- [ ] Auth & RBAC endpoints (JWT, refresh, TOTP 2FA)
-- [ ] Masters — shops, suppliers, products, customers
-- [ ] Inventory — movements, valuation (FIFO/LIFO/WAC), transfers, adjustments
-- [ ] Sales & POS — GST invoicing, returns, payments
-- [ ] Purchase — requisition → PO → GRN → bill → payment
-- [ ] Accounting — double-entry posting, P&L, balance sheet, trial balance
-- [ ] GST — GSTR-1/3B data, HSN summary, e-invoice payload
-- [ ] Expenses, employees, documents, notifications
-- [ ] Reports engine + AI advisor
-- [ ] Frontend — 3D glassmorphism dashboard, POS, resource pages
-- [ ] Documentation set
+Everything below is verified against a real database, in a browser.
+
+- [x] **Sign in** — 8 roles, permissions enforced per shop, optional 2FA
+- [x] **Products, Suppliers, Customers, Shops** — add, edit, delete, archive,
+      restore, search, filter, sort, Excel/CSV/PDF export, print, audit history
+- [x] **Stock** — receive, adjust for damage or miscount, transfer between shops
+- [x] **Billing (POS)** — scan or search, live GST total, cash/UPI/card,
+      printable tax invoice, refuses to oversell
+- [x] **Profit** — computed from what each item actually cost you at the moment
+      it sold
+- [x] **Dashboard** — 3D shop comparison and charts *(figures are still sample
+      data until more sales exist)*
+
+### Not built
+
+Purchase orders · double-entry accounting · GST return filing · expenses ·
+employees & payroll · notifications (WhatsApp/SMS) · AI advisor · mobile apps ·
+e-invoice (IRP)
+
+The database already models all of these — they need their screens and business
+logic.
 
 ---
 
