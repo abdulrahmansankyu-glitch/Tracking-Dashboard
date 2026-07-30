@@ -5,6 +5,9 @@ import { hasPermission, type Permission, type RoleName } from '@intoto/shared';
 
 import { api, tokenStore } from '@/lib/api';
 
+/** Set when someone signs out on purpose, so demo auto-entry stands down. Tab-scoped. */
+export const SIGNED_OUT_KEY = 'intoto.signedOut';
+
 export interface SessionShop {
   id: string;
   name: string;
@@ -85,6 +88,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // A failed revoke must not trap the user in a session they asked to leave.
     }
     tokenStore.clear();
+    // Remembered for this tab only. Demo builds sign in automatically on arrival, and
+    // without this the sign-out button would hand the user straight back to the dashboard
+    // they just left. Cleared when someone signs in deliberately.
+    if (typeof window !== 'undefined') sessionStorage.setItem(SIGNED_OUT_KEY, '1');
     set({ user: null, activeShopId: null, status: 'unauthenticated' });
   },
 

@@ -1,15 +1,27 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { KeyRound, Loader2, Lock, ShieldCheck, User } from 'lucide-react';
+import { ArrowRight, KeyRound, Loader2, Lock, ShieldCheck, User } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import { GlassCard } from '@/components/ui/glass-card';
 import { Input } from '@/components/ui/input';
-import { useAuthStore } from '@/stores/auth-store';
+import { SIGNED_OUT_KEY, useAuthStore } from '@/stores/auth-store';
+
+/**
+ * Demo mode: open the app without typing credentials.
+ *
+ * Off unless the deployment sets it, because it puts a working password in the browser
+ * bundle — fine while the database holds nothing but seed data, not once real sales are
+ * in it. Turning it off is one environment variable, and the normal sign-in form below
+ * is always present either way.
+ */
+const DEMO_ENTRY = process.env.NEXT_PUBLIC_DEMO_LOGIN === 'true';
+const DEMO_EMAIL = process.env.NEXT_PUBLIC_DEMO_EMAIL ?? 'owner@intoto.in';
+const DEMO_PASSWORD = process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? 'Intoto@2025';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -21,11 +33,36 @@ export default function LoginPage() {
   const [needsTwoFactor, setNeedsTwoFactor] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [entering, setEntering] = useState(false);
 
   // Someone arriving with a live session should not be asked to sign in again.
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  const enterDemo = useCallback(async () => {
+    setEntering(true);
+    setError(null);
+    sessionStorage.removeItem(SIGNED_OUT_KEY);
+
+    const result = await login(DEMO_EMAIL, DEMO_PASSWORD);
+    if (result.ok) {
+      router.replace('/dashboard');
+      return;
+    }
+
+    setError(result.message ?? 'Could not open the demo — sign in below');
+    setEntering(false);
+  }, [login, router]);
+
+  // Straight in, no form. Skipped after a deliberate sign-out; otherwise the sign-out
+  // button would return the user to the dashboard they just left. Runs once — a failure
+  // leaves status unchanged, so this does not retry in a loop.
+  useEffect(() => {
+    if (!DEMO_ENTRY || status !== 'unauthenticated') return;
+    if (sessionStorage.getItem(SIGNED_OUT_KEY)) return;
+    void enterDemo();
+  }, [status, enterDemo]);
 
   useEffect(() => {
     if (status === 'authenticated') router.replace('/dashboard');
@@ -46,6 +83,7 @@ export default function LoginPage() {
     }
 
     if (result.ok) {
+      sessionStorage.removeItem(SIGNED_OUT_KEY);
       toast.success('Welcome back');
       router.replace('/dashboard');
       return;
@@ -55,10 +93,15 @@ export default function LoginPage() {
     setSubmitting(false);
   }
 
-  if (status === 'idle' || status === 'authenticated') {
+  if (status === 'idle' || status === 'authenticated' || entering) {
     return (
       <main className="grid min-h-screen place-items-center">
-        <Loader2 className="h-6 w-6 animate-spin text-[var(--text-muted)]" aria-label="Loading" />
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="h-6 w-6 animate-spin text-[var(--text-muted)]" aria-label="Loading" />
+          {entering && (
+            <p className="text-sm text-[var(--text-secondary)]">Opening Intoto ERP…</p>
+          )}
+        </div>
       </main>
     );
   }
@@ -82,6 +125,23 @@ export default function LoginPage() {
         </div>
 
         <GlassCard variant="strong" padding="lg">
+          {DEMO_ENTRY && (
+            <div className="mb-5">
+              <Button size="lg" className="w-full" onClick={() => void enterDemo()}>
+                Open Intoto ERP
+                <ArrowRight className="h-4 w-4" aria-hidden />
+              </Button>
+              <p className="mt-2 text-center text-xs text-[var(--text-muted)]">
+                Opens the owner account with sample shops, stock and customers
+              </p>
+              <div className="mt-5 flex items-center gap-3">
+                <span className="h-px flex-1 bg-[var(--glass-ring)]" />
+                <span className="text-xs text-[var(--text-muted)]">or sign in</span>
+                <span className="h-px flex-1 bg-[var(--glass-ring)]" />
+              </div>
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
             <Input
               label="Email or mobile"

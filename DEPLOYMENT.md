@@ -110,6 +110,12 @@ pg_dump "<your Neon connection string>" > backup-$(date +%F).sql
 
 ## Security before real business data
 
+0. **Turn off the no-login demo.** The deployment ships with
+   `NEXT_PUBLIC_DEMO_LOGIN=true`, which opens the app straight into the owner account so
+   you can look around without typing anything. It works by putting the owner password
+   into the browser bundle, so anyone with the link is the owner. On Render: `intoto-web`
+   → **Environment** → set `NEXT_PUBLIC_DEMO_LOGIN` to `false` → **Save**. The normal
+   sign-in form is underneath it the whole time and starts working immediately.
 1. **Change every seeded password.** They are published in this file.
 2. **Set `FIELD_ENCRYPTION_KEY`** — without it supplier bank details sit in plain text.
 3. **Turn on two-factor** for the owner account (Settings → Security).

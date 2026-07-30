@@ -109,7 +109,13 @@ export interface RequestOptions extends Omit<RequestInit, 'body'> {
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { body, anonymous, raw, query, headers, ...rest } = options;
 
-  const url = new URL(`${API_URL}${path.startsWith('/') ? path : `/${path}`}`);
+  // A base is required because API_URL is a relative path in deployment (`/api/v1`, so the
+  // browser calls this app's own origin and Next proxies through to the API). `new URL`
+  // rejects a relative string with no base — which surfaced as the useless browser error
+  // "Failed to construct 'URL': Invalid URL" on every request, including login. When
+  // API_URL is absolute, as it is in local development, the base is ignored.
+  const origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
+  const url = new URL(`${API_URL}${path.startsWith('/') ? path : `/${path}`}`, origin);
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value !== undefined && value !== null && value !== '') {
       url.searchParams.set(key, String(value));

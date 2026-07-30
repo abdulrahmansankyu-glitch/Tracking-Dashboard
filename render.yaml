@@ -114,3 +114,10 @@ services:
           property: host
       - key: NEXT_PUBLIC_APP_NAME
         value: Intoto ERP
+      # Opens the app without a login screen, using the seeded owner account.
+      #
+      # This puts a working password into the browser bundle, so it is safe only while the
+      # database holds nothing but seed data. SET THIS TO false BEFORE ENTERING REAL SALES,
+      # then redeploy — the normal sign-in form is always there underneath.
+      - key: NEXT_PUBLIC_DEMO_LOGIN
+        value: "true"
