@@ -1,0 +1,36 @@
+# Without this file, `COPY apps/api ./apps/api` drags the *host's* node_modules into the
+# image on top of the one the build just installed. pnpm's node_modules is a tree of
+# symlinks pointing at absolute paths on the machine that created it, so those links land
+# in the container pointing at directories that do not exist — and the build fails inside
+# `nest build` with an error that says nothing about the real cause.
+#
+# This was the actual reason the Docker build failed.
+
+node_modules
+**/node_modules
+
+# Build output — rebuilt inside the image, and stale copies shadow the fresh ones.
+dist
+**/dist
+.next
+**/.next
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Secrets must never enter an image layer; layers are readable by anyone who pulls it.
+.env
+.env.*
+!.env.example
+
+# Not needed to build or run
+.git
+.github
+coverage
+storage
+uploads
+*.log
+docs
+README.md
+DEPLOYMENT.md
+netlify.toml
+docker-compose.yml
