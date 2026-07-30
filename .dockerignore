@@ -26,8 +26,12 @@ dist
 .git
 .github
 coverage
-storage
-uploads
+# Anchored: a bare `storage` also matches apps/api/src/common/storage/, which would keep
+# the API source out of the image. See the matching note in .gitignore.
+/storage
+/uploads
+apps/api/storage
+apps/api/uploads
 *.log
 docs
 README.md

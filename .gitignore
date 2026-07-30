@@ -28,9 +28,17 @@ coverage/
 # Prisma
 apps/api/prisma/migrations/dev.db*
 
-# Uploads (local storage driver)
-storage/
-uploads/
+# Uploads (local storage driver).
+#
+# Anchored with a leading slash, and listed per directory, on purpose. A bare `storage/`
+# matches a directory of that name at ANY depth — which silently excluded
+# apps/api/src/common/storage/, so the API source was incomplete in the repository and
+# every clean build failed at `nest build` with "Cannot find module './storage/...'".
+# Only these two names, in these two places, are upload directories.
+/storage/
+/uploads/
+apps/api/storage/
+apps/api/uploads/
 
 # OS / editor
 .DS_Store
