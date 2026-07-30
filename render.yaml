@@ -1,10 +1,11 @@
 # One-click deploy for Intoto ERP.
 #
-# Render reads this file and creates everything the system needs — database, backend and
-# the screens — in a single action. Nothing to configure by hand: the pieces are wired to
-# each other below, and the secrets are generated rather than typed.
+#   https://dashboard.render.com/blueprints → New Blueprint Instance
 #
-#   https://render.com/deploy?repo=https://github.com/abdulrahmansankyu-glitch/shop-intoto
+# Deliberately NOT Docker. Two attempts at Docker images failed on the seams between
+# pnpm's symlinked node_modules and the image build. Render's native Node runtime runs
+# the same commands the project already uses in development, so there is far less between
+# the source and a running process — and any failure names the actual command that broke.
 #
 # Free tier, with two limits worth knowing before you rely on it:
 #   * Services sleep after 15 minutes idle and take ~50s to wake.
@@ -23,17 +24,32 @@ services:
   # ---------------- Backend ----------------
   - type: web
     name: intoto-api
-    runtime: docker
-    dockerfilePath: ./infra/docker/api.Dockerfile
-    dockerContext: .
+    runtime: node
     plan: free
     region: singapore
+    rootDir: .
     healthCheckPath: /api/v1/health
+
+    buildCommand: >-
+      corepack enable &&
+      pnpm install --frozen-lockfile &&
+      pnpm --filter @intoto/shared build &&
+      pnpm --filter @intoto/api exec prisma generate &&
+      pnpm --filter @intoto/api build
+
+    # Migrations run before the server accepts traffic, so the process never serves
+    # against a schema it does not match. The seed only fills an empty database, so a
+    # fresh deployment is usable on arrival instead of showing a login screen with no
+    # accounts — and a restart never disturbs real data.
+    startCommand: sh infra/render/start-api.sh
+
     envVars:
       - key: DATABASE_URL
         fromDatabase:
           name: intoto-db
           property: connectionString
+      - key: NODE_VERSION
+        value: "22"
       - key: NODE_ENV
         value: production
       - key: API_PREFIX
@@ -46,8 +62,6 @@ services:
       # Encrypts supplier bank details at rest.
       - key: FIELD_ENCRYPTION_KEY
         generateValue: true
-      # Requests reach the API through the web server's proxy, so they arrive same-origin
-      # and no CORS allowance is needed. Kept for links in emailed documents.
       - key: APP_URL
         fromService:
           type: web
@@ -61,25 +75,36 @@ services:
         value: local
       - key: AI_ENABLED
         value: false
-      # Creates the tables and loads your 3 shops, 20 suppliers and product catalogue on
-      # first boot, so the system is usable the moment it finishes deploying.
       - key: RUN_SEED_ON_BOOT
-        value: true
+        value: "true"
 
   # ---------------- Screens ----------------
   - type: web
     name: intoto-web
-    runtime: docker
-    dockerfilePath: ./infra/docker/web.Dockerfile
-    dockerContext: .
+    runtime: node
     plan: free
     region: singapore
+    rootDir: .
+
+    buildCommand: >-
+      corepack enable &&
+      pnpm install --frozen-lockfile &&
+      pnpm --filter @intoto/shared build &&
+      pnpm --filter @intoto/web build
+
+    # Bound to 0.0.0.0 — the default localhost bind makes the service unreachable from
+    # outside, which looks identical to a crash.
+    startCommand: cd apps/web && ./node_modules/.bin/next start -H 0.0.0.0 -p $PORT
+
     envVars:
+      - key: NODE_VERSION
+        value: "22"
       - key: NODE_ENV
         value: production
-      # The browser calls this server's own origin; Next proxies through to the API.
-      # That keeps the backend address a runtime value rather than something baked into
-      # the bundle at build time, and removes cross-origin requests entirely.
+      # The browser calls this server's own origin and Next proxies through to the API.
+      # Next bakes NEXT_PUBLIC_* into the bundle at build time, so it cannot be handed an
+      # address that only exists once the host assigns one; the proxy keeps the backend
+      # address a runtime value, and removes cross-origin requests entirely.
       - key: NEXT_PUBLIC_API_URL
         value: /api/v1
       - key: API_INTERNAL_URL

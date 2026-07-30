@@ -54,61 +54,39 @@ Now http://localhost:3000 opens. Sign in with **owner@intoto.in** / **Intoto@202
 
 ---
 
-## Option B — put it online (free tier)
+## Option B — put it online (free)
 
-Three free services. Netlify alone is not enough — it cannot run the backend or store
-data.
+**Netlify cannot host this on its own.** It serves files and short serverless functions;
+it has no database and cannot keep a backend process running. The same is true of
+GitHub Pages and Vercel's free tier. This system needs a database and a long-lived
+server, so it needs a host that provides both.
 
-| Piece | Service | Free tier limit |
-|---|---|---|
-| Database | **Neon** | 0.5 GB — enough for years of a 3-shop business |
-| Backend API | **Render** | Sleeps after 15 min idle; first request then takes ~50s |
-| Frontend | **Netlify** | 100 GB bandwidth/month |
+Render provides all three pieces — database, backend, screens — from one file, and the
+free tier covers it.
 
-### Step 1 — Database (Neon)
+### Steps
 
-1. Sign up at https://neon.tech
-2. Create a project, region **Singapore** (closest to India)
-3. Copy the connection string — looks like
-   `postgresql://user:pass@ep-xxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require`
+1. Sign up at https://render.com and connect your GitHub account.
+2. Go to https://dashboard.render.com/blueprints → **New Blueprint Instance**.
+3. Pick **shop-intoto**, set **Branch** to
+   `claude/intoto-erp-system-design-4m9rro`, give it a name, click **Apply**.
+4. Wait for `intoto-api` and `intoto-web` to both report **Live** (about 10 minutes).
+5. Open `intoto-web` and click the URL at the top. **That is your link.**
+6. Sign in as **owner@intoto.in** / **Intoto@2025**, then change that password.
 
-### Step 2 — Backend (Render)
+Nothing else to configure. The blueprint generates the secrets, connects the services to
+each other, applies the database schema, and loads your 3 shops, 20 suppliers and product
+catalogue on first boot.
 
-1. Sign up at https://render.com and connect your GitHub
-2. **New → Blueprint**, pick this repository, branch
-   `claude/intoto-erp-system-design-4m9rro`. It reads `render.yaml`.
-3. Set these environment variables:
-   - `DATABASE_URL` — the Neon string from step 1
-   - `FIELD_ENCRYPTION_KEY` — run `openssl rand -base64 32` and paste the result
-   - `APP_URL` — leave blank for now; fill it in after step 3
-4. Deploy. You get a URL like `https://intoto-api.onrender.com`.
-5. Check it works: open `https://intoto-api.onrender.com/api/v1/health` — it should
-   reply `{"status":"ok"}`.
+### Why this does not use Docker
 
-### Step 3 — Frontend (Netlify)
+Earlier versions built Docker images and failed twice on the seams between pnpm's
+symlinked `node_modules` and the image build. Render's native Node runtime runs the same
+commands the project uses in development, so there is far less between the source and a
+running process — and when something does break, the log names the command that broke.
 
-1. Sign up at https://netlify.com and connect GitHub
-2. **Add new site → Import an existing project**, pick this repository and the same
-   branch. It reads `netlify.toml`.
-3. Add one environment variable:
-   - `NEXT_PUBLIC_API_URL` = `https://intoto-api.onrender.com/api/v1`
-4. Deploy. You get a URL like `https://intoto-erp.netlify.app` — **this is your link.**
-
-### Step 4 — Connect them
-
-Go back to Render and set `APP_URL` to your Netlify URL, then redeploy. Without this the
-browser blocks the frontend from calling the API and every screen stays empty.
-
-### Step 5 — Load the starting data
-
-In Render, open the **Shell** tab on the API service:
-
-```bash
-node ../../node_modules/prisma/build/index.js db push --schema prisma/schema.prisma
-npx tsx prisma/seed.ts
-```
-
-This creates your 3 shops, 20 suppliers, product catalogue and user accounts.
+The Dockerfiles under `infra/docker/` are kept for self-hosting on your own server; the
+blueprint no longer uses them.
 
 ---
 
