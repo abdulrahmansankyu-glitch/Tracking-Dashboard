@@ -140,11 +140,25 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     };
   };
 
-  let response = await fetch(url, build());
+  // A thrown fetch means the request never completed — offline, DNS, a dead proxy. Left
+  // uncaught it surfaces as a raw TypeError with no indication of what to do about it.
+  const send = async (): Promise<Response> => {
+    try {
+      return await fetch(url, build());
+    } catch (cause) {
+      throw new ApiError({
+        statusCode: 0,
+        message: 'Cannot reach the server. Check your connection and try again.',
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+  };
+
+  let response = await send();
 
   if (response.status === 401 && !anonymous) {
     if (await refreshAccessToken()) {
-      response = await fetch(url, build());
+      response = await send();
     } else {
       tokenStore.clear();
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
@@ -170,9 +184,12 @@ async function toApiError(response: Response): Promise<ApiError> {
     const payload = (await response.json()) as ApiErrorPayload;
     return new ApiError({ ...payload, statusCode: payload.statusCode ?? response.status });
   } catch {
+    // A body that is not JSON did not come from the API — a proxy error page, a gateway
+    // timeout. Naming the status code beats the bare "Request failed" this used to give,
+    // which told the user nothing about where to look.
     return new ApiError({
       statusCode: response.status,
-      message: response.statusText || 'Request failed',
+      message: `Server returned ${response.status} ${response.statusText || 'Error'} — the API may still be starting up.`,
     });
   }
 }

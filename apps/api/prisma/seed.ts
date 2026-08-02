@@ -7,7 +7,13 @@
  *   pnpm db:seed
  */
 
-import { AccountType, PrismaClient, RoleName, ShopType } from '@prisma/client';
+import {
+  AccountType,
+  PrismaClient,
+  RoleName,
+  ShopType,
+  StockMovementType,
+} from '@prisma/client';
 import { ROLE_METADATA, ROLE_PERMISSIONS, TEXTILE_HSN_CODES, UNITS_OF_MEASURE } from '@intoto/shared';
 import bcrypt from 'bcryptjs';
 import { resolve } from 'node:path';
@@ -531,6 +537,86 @@ async function main(): Promise<void> {
     productCount += 1;
   }
   console.log(`  Products: ${productCount}`);
+
+  // ---------------------------------------------------------------------------
+  // Opening stock
+  //
+  // Without this the catalogue exists but every shelf is empty: the billing counter has
+  // nothing to sell and the dashboard reads zero everywhere.
+  //
+  // Each balance is written together with the OPENING movement that explains it. The
+  // movement ledger is the append-only truth and StockItem is its roll-up, so a balance
+  // with no movement behind it would leave valuation and stock history disagreeing from
+  // the first day.
+  // ---------------------------------------------------------------------------
+  const seededProducts = await prisma.product.findMany({
+    where: { organizationId: ORG_ID },
+    select: { id: true, purchaseCost: true, minStock: true },
+    orderBy: { sku: 'asc' },
+  });
+
+  // Fixed multipliers rather than random numbers: re-seeding a fresh database then
+  // produces the same figures, so a report or screenshot stays reproducible. The depot
+  // carries the most, the mall counter the least.
+  const stockFactorByShop = [1.8, 3.2, 0.7];
+
+  let stockRows = 0;
+  for (const [shopIndex, shop] of shops.entries()) {
+    const factor = stockFactorByShop[shopIndex] ?? 1;
+
+    for (const [productIndex, product] of seededProducts.entries()) {
+      // Idempotent: a re-run must not stack a second opening balance on the first.
+      const existing = await prisma.stockItem.findUnique({
+        where: {
+          shopId_productId_variantId: { shopId: shop.id, productId: product.id, variantId: '' },
+        },
+        select: { id: true },
+      });
+      if (existing) continue;
+
+      // Every seventh product is left deliberately short, so the low-stock report opens
+      // with real cases to act on instead of being uniformly green.
+      const short = productIndex % 7 === 3;
+      const quantity = Math.max(
+        0,
+        Math.round(Number(product.minStock ?? 0) * factor * (short ? 0.4 : 1)),
+      );
+      if (quantity === 0) continue;
+
+      const unitCost = Number(product.purchaseCost ?? 0);
+      const totalCost = Number((unitCost * quantity).toFixed(4));
+
+      await prisma.$transaction([
+        prisma.stockItem.create({
+          data: {
+            shopId: shop.id,
+            productId: product.id,
+            variantId: '',
+            quantity,
+            avgCost: unitCost,
+            stockValue: totalCost,
+            lastMovementAt: new Date(),
+          },
+        }),
+        prisma.stockMovement.create({
+          data: {
+            shopId: shop.id,
+            productId: product.id,
+            type: StockMovementType.OPENING,
+            quantity,
+            signedQuantity: quantity,
+            unitCost,
+            totalCost,
+            balanceAfter: quantity,
+            referenceType: 'SEED',
+            notes: 'Opening stock',
+          },
+        }),
+      ]);
+      stockRows += 1;
+    }
+  }
+  console.log(`  Opening stock: ${stockRows} shop/product balances`);
 
   console.log('\nSeed complete.');
   console.log(`  Sign in: owner@intoto.in / ${DEFAULT_PASSWORD}`);

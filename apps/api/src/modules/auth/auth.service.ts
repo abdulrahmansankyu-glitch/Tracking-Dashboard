@@ -178,7 +178,8 @@ export class AuthService {
       extraGrants: user.extraPermissions as Permission[],
       denials: user.deniedPermissions as Permission[],
     });
-    const shops = user.shopAccess.map((access) => access.shop);
+    const assignedShops = user.shopAccess.map((access) => access.shop);
+    const shops = await this.resolveVisibleShops(user.organizationId, assignedShops);
 
     const payload: AccessTokenPayload = {
       sub: user.id,
@@ -187,8 +188,11 @@ export class AuthService {
       email: user.email,
       roles,
       permissions,
-      // An empty list means "all shops" — see canAccessShop.
-      shopIds: shops.map((shop) => shop.id),
+      // An empty list means "all shops" — see canAccessShop. Deliberately built from the
+      // assignments rather than from the resolved list above: writing today's shop ids in
+      // would freeze the set, and a shop created later would be unreachable until the
+      // user signed in again.
+      shopIds: assignedShops.map((shop) => shop.id),
       employeeId: user.employee?.id,
     };
 
@@ -329,7 +333,10 @@ export class AuthService {
         extraGrants: user.extraPermissions as Permission[],
         denials: user.deniedPermissions as Permission[],
       }),
-      shops: user.shopAccess.map((a) => a.shop),
+      shops: await this.resolveVisibleShops(
+        user.organizationId,
+        user.shopAccess.map((a) => a.shop),
+      ),
       organization: user.organization,
       employee: user.employee,
       twoFactorEnabled: user.twoFactorEnabled,
@@ -508,6 +515,26 @@ export class AuthService {
         // Never let audit failure block a login.
         this.logger.error(`Auth audit write failed: ${error.message}`);
       });
+  }
+
+  /**
+   * The shops a session should be able to see and switch between.
+   *
+   * No shop assignments means org-wide access (see canAccessShop). That is the right
+   * answer for authorization but useless to the screens: the shop selector and the
+   * billing counter need a concrete list, and an owner — who is seeded with no explicit
+   * assignments — would otherwise be shown no shop to bill against at all.
+   */
+  private async resolveVisibleShops(
+    organizationId: string,
+    assigned: Array<{ id: string; name: string; code: string }>,
+  ): Promise<Array<{ id: string; name: string; code: string }>> {
+    if (assigned.length > 0) return assigned;
+    return this.prisma.shop.findMany({
+      where: { organizationId, deletedAt: null, archivedAt: null, isActive: true },
+      select: { id: true, name: true, code: true },
+      orderBy: { code: 'asc' },
+    });
   }
 
   private parseDays(ttl: string): number {
