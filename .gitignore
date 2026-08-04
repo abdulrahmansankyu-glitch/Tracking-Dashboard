@@ -40,6 +40,10 @@ apps/api/prisma/migrations/dev.db*
 apps/api/storage/
 apps/api/uploads/
 
+# Tracker's local JSON store — the fallback used when no DATABASE_URL is set.
+# It holds real tracked jobs, so it belongs on the machine, not in the repository.
+apps/tracker/data/
+
 # OS / editor
 .DS_Store
 Thumbs.db

@@ -79,6 +79,7 @@ apps/
     src/common/           cross-cutting infrastructure
     src/modules/          business domains
   web/                  Next.js frontend
+  tracker/              Engineering Activity Tracker (separate app — see below)
 packages/
   shared/               GST engine, money, RBAC, Zod schemas — used by BOTH tiers
 infra/                  Docker, Kubernetes, Postgres init
@@ -148,6 +149,26 @@ e-invoice (IRP)
 
 The database already models all of these — they need their screens and business
 logic.
+
+---
+
+## Also in this repository: the Engineering Activity Tracker
+
+`apps/tracker/` is a **separate application for a different business** — daily job
+tracking for a solid handling plant (SHP / DCU), across seven registers: Action
+Notice, IWS, PZV, EIS, Routine Inspection, CTS Recommendation and PDM. It shares
+this repository and the Postgres instance; it shares no code and no domain with the
+clothing ERP above, and it deploys to its own URL as `intoto-tracker`.
+
+The team works in Excel, so the workbook is how data moves: upload a file and every
+sheet becomes its own choice of register, work in the app, export the whole thing
+back as one master workbook that re-imports cleanly.
+
+```bash
+pnpm dev:tracker      # http://localhost:4100
+```
+
+Full documentation: **[apps/tracker/README.md](apps/tracker/README.md)**.
 
 ---
 

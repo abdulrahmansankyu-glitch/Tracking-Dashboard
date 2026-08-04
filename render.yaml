@@ -121,3 +121,43 @@ services:
       # then redeploy — the normal sign-in form is always there underneath.
       - key: NEXT_PUBLIC_DEMO_LOGIN
         value: "true"
+
+  # ------------- Engineering Activity Tracker -------------
+  #
+  # A separate service with its own URL — this is the link the engineering team gets.
+  # It shares the database above but keeps its tables in a `tracker` schema, out of
+  # reach of the ERP's `prisma db push`, which drops tables in `public` that its own
+  # schema does not declare.
+  #
+  # One process serves both the API and the browser app, so there is no second host
+  # to configure and no cross-origin setup to get wrong.
+  - type: web
+    name: intoto-tracker
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: .
+    healthCheckPath: /api/health
+
+    # No build step: the tracker is plain JavaScript on both sides. Only its own
+    # dependencies are installed, so this deploys in a fraction of the API's time.
+    buildCommand: >-
+      corepack enable &&
+      pnpm install --frozen-lockfile --filter @intoto/tracker
+
+    startCommand: node apps/tracker/src/server.js
+
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: intoto-db
+          property: connectionString
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      # The shared code the team types once, on first visit. Render asks for a value
+      # when you create the blueprint. Leave it empty ONLY if the URL itself is
+      # private — with no code, anyone holding the link can read and edit the data.
+      - key: TRACKER_ACCESS_CODE
+        sync: false
