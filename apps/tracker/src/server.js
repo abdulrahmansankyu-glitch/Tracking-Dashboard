@@ -19,19 +19,20 @@ import express from 'express';
 import multer from 'multer';
 
 import { buildWorkbook, inspectWorkbook, readSheet } from './excel.js';
+import { sanitiseData, summarise } from './query.js';
 import {
-  CLOSED_STATUSES,
   DUE_SOON_DAYS,
   PRIORITY_VALUES,
   REGISTERS,
   STATUSES,
-  daysUntil,
   deriveRecord,
-  dueState,
   getRegister,
   registerCatalogue,
 } from './registers.js';
 import { createStore, toRow } from './store.js';
+
+// Re-exported so tests and the standalone build have one import for the dashboard.
+export { summarise };
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(here, '..', 'public');
@@ -61,19 +62,6 @@ const actorOf = (req) => {
 
 function asError(res, status, message) {
   return res.status(status).json({ error: message });
-}
-
-/** Merge submitted field values with what the register declares, dropping unknowns. */
-function sanitiseData(register, input) {
-  const allowed = new Set(register.fields.map((f) => f.key));
-  const data = {};
-  for (const [key, value] of Object.entries(input ?? {})) {
-    // `extra:` keys are columns carried in from a sheet the app has no field for.
-    if (!allowed.has(key) && !key.startsWith('extra:')) continue;
-    if (value === null || value === undefined || value === '') continue;
-    data[key] = typeof value === 'string' ? value.trim() : value;
-  }
-  return data;
 }
 
 export async function createApp(env = process.env) {
@@ -462,100 +450,6 @@ export async function createApp(env = process.env) {
   });
 
   return { app, store };
-}
-
-/** Everything the dashboard shows, computed in one pass over the records. */
-export function summarise(records) {
-  const open = records.filter((r) => !CLOSED_STATUSES.has(r.status));
-  const state = (r) => dueState(r.dueDate, r.status);
-
-  const overdue = open.filter((r) => state(r) === 'overdue');
-  const dueSoon = open.filter((r) => state(r) === 'due-soon');
-
-  const tally = (rows, key) => {
-    const counts = new Map();
-    for (const row of rows) {
-      const name = row[key] || 'Unassigned';
-      const entry = counts.get(name) ?? { name, open: 0, overdue: 0, dueSoon: 0 };
-      entry.open += 1;
-      if (state(row) === 'overdue') entry.overdue += 1;
-      if (state(row) === 'due-soon') entry.dueSoon += 1;
-      counts.set(name, entry);
-    }
-    return [...counts.values()].sort(
-      (a, b) => b.overdue - a.overdue || b.dueSoon - a.dueSoon || b.open - a.open,
-    );
-  };
-
-  const buckets = [
-    { key: 'overdue', label: 'Overdue', count: overdue.length },
-    { key: '0-7', label: 'Within 7 days', count: 0 },
-    { key: '8-14', label: '8–14 days', count: 0 },
-    { key: '15-30', label: '15–30 days', count: 0 },
-    { key: '31+', label: 'Beyond 30 days', count: 0 },
-    { key: 'undated', label: 'No date set', count: open.filter((r) => !r.dueDate).length },
-  ];
-
-  for (const row of open) {
-    if (!row.dueDate) continue;
-    const days = daysUntil(row.dueDate);
-    if (days === null || days < 0) continue;
-    if (days <= 7) buckets[1].count += 1;
-    else if (days <= 14) buckets[2].count += 1;
-    else if (days <= DUE_SOON_DAYS) buckets[3].count += 1;
-    else buckets[4].count += 1;
-  }
-
-  return {
-    totals: {
-      all: records.length,
-      open: open.length,
-      overdue: overdue.length,
-      dueSoon: dueSoon.length,
-      undated: open.filter((r) => !r.dueDate).length,
-      completed: records.filter((r) => r.status === 'Completed').length,
-    },
-    byRegister: REGISTERS.map((register) => {
-      const rows = records.filter((r) => r.register === register.id);
-      const openRows = rows.filter((r) => !CLOSED_STATUSES.has(r.status));
-      return {
-        id: register.id,
-        name: register.name,
-        short: register.short,
-        total: rows.length,
-        open: openRows.length,
-        overdue: openRows.filter((r) => state(r) === 'overdue').length,
-        dueSoon: openRows.filter((r) => state(r) === 'due-soon').length,
-      };
-    }),
-    byPriority: PRIORITY_VALUES.map((priority) => {
-      const rows = open.filter((r) => r.priority === priority);
-      return {
-        priority,
-        open: rows.length,
-        overdue: rows.filter((r) => state(r) === 'overdue').length,
-        dueSoon: rows.filter((r) => state(r) === 'due-soon').length,
-      };
-    }),
-    byActionBy: tally(open, 'actionBy').slice(0, 12),
-    byInitiator: tally(open, 'initiator').slice(0, 12),
-    dueBuckets: buckets,
-    attention: [...overdue, ...dueSoon]
-      .sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)))
-      .slice(0, 40)
-      .map((r) => ({
-        id: r.id,
-        register: r.register,
-        ref: r.ref,
-        title: r.title,
-        dueDate: r.dueDate,
-        days: daysUntil(r.dueDate),
-        priority: r.priority,
-        status: r.status,
-        actionBy: r.actionBy,
-        initiator: r.initiator,
-      })),
-  };
 }
 
 // Started directly (not imported by a test), so `node src/server.js` just works.

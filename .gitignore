@@ -40,6 +40,11 @@ apps/api/prisma/migrations/dev.db*
 apps/api/storage/
 apps/api/uploads/
 
+# Tracker's standalone build output — 1 MB of generated HTML, rebuilt in a second
+# by `pnpm --filter @intoto/tracker build:standalone`. Committing it would age
+# silently against the sources it is assembled from.
+apps/tracker/dist/
+
 # Tracker's local JSON store — the fallback used when no DATABASE_URL is set.
 # It holds real tracked jobs, so it belongs on the machine, not in the repository.
 apps/tracker/data/

@@ -132,7 +132,13 @@ async function api(path, options = {}) {
     options.method = options.method ?? 'POST';
   }
 
-  const response = await fetch(path, { ...options, headers });
+  // The standalone single-file build has no server behind it. It installs a local
+  // handler that answers these same paths out of browser storage and returns real
+  // `Response` objects, so everything below — and the whole UI — runs unchanged
+  // against either transport.
+  const response = globalThis.__trackerLocalApi
+    ? await globalThis.__trackerLocalApi(path, { ...options, headers })
+    : await fetch(path, { ...options, headers });
 
   // Checking a code is the one place a 401 is an answer rather than a problem —
   // sending the user back to the gate they are already standing at would replace
@@ -1627,6 +1633,14 @@ function render() {
           h('button', { class: 'btn primary', onclick: () => go('import') }, '↑ Import Excel'),
         ),
         state.error && h('div', { class: 'content' }, h('div', { class: 'banner error' }, state.error)),
+        // The standalone build says where its data lives. Someone who was handed a
+        // file rather than a URL has no other way to know their edits are local.
+        state.config.storageNotice &&
+          h(
+            'div',
+            { class: 'content', style: 'padding-bottom: 0' },
+            h('div', { class: 'banner info' }, state.config.storageNotice),
+          ),
         body,
       ),
     ),
@@ -1655,7 +1669,7 @@ function render() {
 async function boot() {
   applyTheme();
   try {
-    state.config = await fetch('/api/config').then((r) => r.json());
+    state.config = await api('/api/config');
   } catch {
     $('#root').replaceChildren(
       h('div', { class: 'empty' }, 'Cannot reach the tracker server. Is it running?'),

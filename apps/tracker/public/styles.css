@@ -394,6 +394,20 @@ textarea:focus {
   box-shadow: 0 0 0 3px var(--accent-wash);
 }
 
+/* Keyboard focus must be visible on every control, not only the text fields.
+   `:focus-visible` keeps the ring off mouse clicks, where it reads as a stuck
+   selection. Rows are focusable targets too — the tables are operated by keyboard
+   as much as by mouse. */
+.btn:focus-visible,
+.nav-item:focus-visible,
+.switch input:focus-visible,
+thead th.sortable:focus-visible,
+tbody tr.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
 textarea {
   min-height: 74px;
   resize: vertical;
@@ -914,6 +928,12 @@ th.num {
   color: var(--critical);
 }
 
+.banner.info {
+  background: var(--accent-wash);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
 .banner.ok {
   background: var(--good-wash);
   border-color: var(--good);
@@ -978,6 +998,24 @@ th.num {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* The spinner is the only motion here. For a reader who asked for less of it, a
+   static ring still reads as "working" — so slow it rather than remove the cue. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .spin {
+    animation: spin 2.4s linear infinite !important;
+    animation-duration: 2.4s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 

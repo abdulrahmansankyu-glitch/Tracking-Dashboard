@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
+    "build:standalone": "node build-standalone.js && node build-standalone.js --fragment",
     "test": "node --test test/*.test.js",
     "typecheck": "echo \"tracker is plain JS — nothing to typecheck\"",
     "lint": "echo \"no linter configured for tracker\""
