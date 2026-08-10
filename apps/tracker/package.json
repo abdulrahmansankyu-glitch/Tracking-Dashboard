@@ -2,7 +2,7 @@
   "name": "@intoto/tracker",
   "version": "1.0.0",
   "private": true,
-  "description": "Engineering Activity Tracker — shared daily job tracking with Excel import/export",
+  "description": "Engineering Activity Tracker \u2014 shared daily job tracking with Excel import/export",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
@@ -10,13 +10,14 @@
     "start": "node src/server.js",
     "build:standalone": "node build-standalone.js && node build-standalone.js --fragment",
     "test": "node --test test/*.test.js",
-    "typecheck": "echo \"tracker is plain JS — nothing to typecheck\"",
+    "typecheck": "echo \"tracker is plain JS \u2014 nothing to typecheck\"",
     "lint": "echo \"no linter configured for tracker\""
   },
   "dependencies": {
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "multer": "^1.4.5-lts.1",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "pdfmake": "^0.2.15"
   }
 }

@@ -100,6 +100,7 @@ const state = {
   confirmToken: '', // password re-confirmation for Settings — memory only, on purpose
   confirmExpires: 0,
   confirmPrompt: null, // { error } while asking
+  logo: null, // the report logo, once loaded
   theme: localStorage.getItem('tracker.theme') ?? 'auto',
   gate: null, // 'setup' | 'login' | 'name' | null
   dashboard: null,
@@ -2019,6 +2020,12 @@ function renderSettings() {
   }
 
   if (state.users === null) {
+    api('/api/report/logo')
+      .then((data) => {
+        state.logo = data.logo || null;
+      })
+      .catch(() => {});
+
     api('/api/users')
       .then((data) => {
         state.users = data.users;
@@ -2319,6 +2326,83 @@ function renderSettings() {
     h(
       'section',
       { class: 'card' },
+      h(
+        'header',
+        null,
+        h('h2', null, 'Report logo'),
+        h('span', { class: 'hint' }, 'printed on the PDF report'),
+      ),
+      h(
+        'p',
+        { class: 'hint', style: 'margin: -6px 0 12px' },
+        'A PNG or JPG under about 400 KB, ideally a wide image on a transparent or white background. It appears beside the "Engineering Department Updates" heading.',
+      ),
+      state.logo &&
+        h('img', {
+          src: state.logo,
+          alt: 'Current report logo',
+          style: 'max-height: 46px; max-width: 220px; margin-bottom: 12px; display: block',
+        }),
+      h(
+        'div',
+        { class: 'toolbar' },
+        h('input', {
+          type: 'file',
+          id: 'logo-input',
+          accept: 'image/png,image/jpeg',
+          style: 'display: none',
+          onchange: async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async () => {
+              try {
+                await api('/api/report/logo', { method: 'PUT', json: { logo: reader.result } });
+                state.logo = reader.result;
+                toast('Logo saved — it will appear on the next report.');
+                render();
+              } catch (error) {
+                toast(error.message);
+              }
+            };
+            reader.readAsDataURL(file);
+          },
+        }),
+        h(
+          'button',
+          { class: 'btn primary', type: 'button', onclick: () => $('#logo-input').click() },
+          state.logo ? 'Replace logo' : 'Upload logo',
+        ),
+        state.logo &&
+          h(
+            'button',
+            {
+              class: 'btn',
+              type: 'button',
+              onclick: async () => {
+                try {
+                  await api('/api/report/logo', { method: 'PUT', json: { logo: null } });
+                  state.logo = null;
+                  toast('Logo removed.');
+                  render();
+                } catch (error) {
+                  toast(error.message);
+                }
+              },
+            },
+            'Remove',
+          ),
+        h(
+          'button',
+          { class: 'btn ghost', type: 'button', onclick: () => download('/api/report.pdf') },
+          'Preview the report',
+        ),
+      ),
+    ),
+
+    h(
+      'section',
+      { class: 'card' },
       h('header', null, h('h2', null, 'Your password')),
       h(
         'form',
@@ -2435,6 +2519,20 @@ function render() {
               },
             },
             state.theme === 'dark' ? '☀ Light' : '☾ Dark',
+          ),
+          h(
+            'button',
+            {
+              class: 'btn',
+              title: 'Engineering Department Updates — summary and what needs attention',
+              onclick: () =>
+                state.authState?.disabled
+                  ? // No server offline to render a PDF; the browser's own
+                    // "Save as PDF" prints the same content from the page.
+                    window.print()
+                  : download('/api/report.pdf'),
+            },
+            '↓ PDF report',
           ),
           h('button', { class: 'btn', onclick: () => download('/api/export') }, '↓ Export all'),
           canWrite() &&

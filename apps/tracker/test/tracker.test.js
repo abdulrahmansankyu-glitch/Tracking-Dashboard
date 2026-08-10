@@ -7,6 +7,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { inflateSync } from 'node:zlib';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -628,6 +629,12 @@ async function withAdmin(run) {
             headers: headers({ 'content-type': 'application/json' }),
             body: JSON.stringify(body),
           }),
+        put: (path, body) =>
+          fetch(base + path, {
+            method: 'PUT',
+            headers: headers({ 'content-type': 'application/json' }),
+            body: JSON.stringify(body),
+          }),
         del: (path) => fetch(base + path, { method: 'DELETE', headers: headers() }),
       };
     };
@@ -876,5 +883,137 @@ test('Settings needs the password again, even for a signed-in admin', async () =
     const viewerConfirm = await confirmFor(login.token, 'inspection-2026');
     assert.ok(viewerConfirm, 'a viewer can confirm their own password');
     assert.equal((await as(login.token, viewerConfirm).get('/api/users')).status, 403);
+  });
+});
+
+// ----------------------------------------------------------------- report ---
+
+/**
+ * The text drawn in a PDF, with all spacing removed, for assertions.
+ *
+ * Three layers have to come off. pdfkit compresses its content streams, so the
+ * words are not in the raw bytes; it writes glyphs as hex strings; and it splits
+ * a word across a kerned array — `[Depar -20 tment] TJ` — so no phrase appears
+ * contiguously. Stripping whitespace from both sides of the comparison is what
+ * makes an assertion about the rendered words possible at all.
+ */
+function pdfText(buffer) {
+  const raw = buffer.toString('latin1');
+  let text = '';
+
+  for (const match of raw.matchAll(/stream\r?\n/g)) {
+    const from = match.index + match[0].length;
+    const to = raw.indexOf('endstream', from);
+    if (to === -1) continue;
+    try {
+      text += inflateSync(Buffer.from(raw.slice(from, to), 'latin1')).toString('latin1');
+    } catch {
+      // Not a compressed stream — images and the like.
+    }
+  }
+
+  // Inside a `[...] TJ` array, the glyphs are hex strings and the bare numbers
+  // between them are kerning. Decoding first and stripping numbers afterwards
+  // also ate the digits in the text — "Due in 30 days" came out "Dueindays" —
+  // so the hex runs are isolated before anything is thrown away.
+  return [...text.matchAll(/\[([^\]]*)\]\s*TJ/g)]
+    .map(([, inner]) =>
+      [...inner.matchAll(/<([0-9A-Fa-f]+)>/g)]
+        .map(([, hex]) => Buffer.from(hex, 'hex').toString('latin1'))
+        .join(''),
+    )
+    .join('')
+    .replace(/\s+/g, '');
+}
+
+/** Compare ignoring the spacing the PDF has already thrown away. */
+const pdfHas = (text, phrase) => text.includes(phrase.replace(/\s+/g, ''));
+
+test('the PDF report is a real PDF and carries the department heading', async () => {
+  await withAdmin(async ({ setup, as, asAdmin }) => {
+    await asAdmin().post('/api/records', {
+      register: 'iws',
+      data: { iwsNumber: 'IWS-2026-001', description: 'Ship loader inspection', targetDate: '2026-01-01' },
+    });
+
+    const response = await as(setup.token).get('/api/report.pdf');
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /application\/pdf/);
+    assert.match(
+      response.headers.get('content-disposition'),
+      /Engineering_Department_Updates_\d{4}-\d{2}-\d{2}\.pdf/,
+    );
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    assert.equal(bytes.subarray(0, 5).toString(), '%PDF-', 'must actually be a PDF');
+
+    const text = pdfText(bytes);
+    for (const phrase of ['Engineering Department Updates', 'Needs attention', 'Each register', 'Total Jobs']) {
+      assert.ok(pdfHas(text, phrase), `the report should contain "${phrase}"`);
+    }
+
+    // The standard-14 fonts are WinAnsi, and a character outside it does not
+    // fail — it silently prints as something else. "Due ≤30d" came out as
+    // `Due "d30d`, so the header is spelled in words and pinned here.
+    assert.ok(pdfHas(text, 'Due in 30d'), 'the due-window header must read as words');
+    assert.ok(!text.includes('"d30d'), 'and not as the mis-encoded form');
+  });
+});
+
+test('a restricted account gets a report covering only its own registers', async () => {
+  await withAdmin(async ({ as, asAdmin, base }) => {
+    const admin = asAdmin();
+    await admin.post('/api/records', { register: 'iws', data: { iwsNumber: 'IWS-1' } });
+    await admin.post('/api/records', { register: 'pdm', data: { equipmentTag: 'PDM-1' } });
+    await admin.post('/api/users', {
+      name: 'Rehan',
+      email: 'rehan@example.com',
+      password: 'conveyor-2026',
+      role: 'editor',
+      registers: ['iws'],
+    });
+
+    const login = await (
+      await fetch(`${base}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'rehan@example.com', password: 'conveyor-2026' }),
+      })
+    ).json();
+
+    const text = pdfText(Buffer.from(await (await as(login.token).get('/api/report.pdf')).arrayBuffer()));
+
+    // Their own register is listed; a register they cannot open is not.
+    assert.ok(pdfHas(text, 'IWS'));
+    assert.ok(!pdfHas(text, 'PDM'), 'a register they cannot open must not appear');
+    assert.ok(
+      pdfHas(text, 'Covers IWS only'),
+      'and the report says what it covers, so it is not mistaken for the whole department',
+    );
+  });
+});
+
+test('the report logo is admin-only and must be an image', async () => {
+  await withAdmin(async ({ setup, as, asAdmin }) => {
+    const png =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+    assert.equal(
+      (await as(setup.token).post('/api/users', { name: 'x', email: 'x@y.com', password: 'longenough1' })).status,
+      403,
+      'sanity: managing needs the confirmation',
+    );
+
+    const admin = asAdmin();
+    assert.equal((await admin.put('/api/report/logo', { logo: png })).status, 200);
+    assert.equal(
+      (await admin.put('/api/report/logo', { logo: 'not-an-image' })).status,
+      400,
+      'anything that is not an image data URI is refused',
+    );
+
+    // And it reaches the report.
+    const text = pdfText(Buffer.from(await (await admin.get('/api/report.pdf')).arrayBuffer()));
+    assert.ok(pdfHas(text, 'Engineering Department Updates'));
   });
 });

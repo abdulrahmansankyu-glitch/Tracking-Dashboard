@@ -88,6 +88,31 @@ the quickest way to start one from scratch.
 
 ---
 
+## The PDF report
+
+**↓ PDF report** on the dashboard produces *Engineering Department Updates* — a
+landscape A4 sheet with the six headline figures, each register's position, and
+everything overdue or due inside the month. It is built from the same
+`summarise()` output the dashboard reads, so the sheet somebody takes into a
+meeting and the screen somebody is looking at cannot disagree.
+
+An admin uploads the company logo once under **Settings → Report logo**; it is
+stored as a data URI, so the report needs nothing from the network to print.
+
+A restricted account's report covers only its own registers and says so on the
+page — otherwise a partial view reads as the whole department's position.
+
+The standard 14 PDF fonts are used, so no font binary ships with the app. They
+are WinAnsi-encoded, which is worth knowing before adding a character to the
+report: one outside that encoding does not fail, it silently prints as something
+else. `Due ≤30d` came out as `Due "d30d`.
+
+The offline single-file build has no server to render a PDF, so its button opens
+the browser's own print dialogue — "Save as PDF" there produces the same content
+from the page.
+
+---
+
 ## Running it
 
 ```bash
@@ -110,7 +135,7 @@ it uses that instead; the tables are created on boot.
 | `TRACKER_DATA_FILE` | `data/tracker.json` | Where the JSON store lives |
 
 ```bash
-pnpm --filter @intoto/tracker test     # 37 tests, no database needed
+pnpm --filter @intoto/tracker test     # 40 tests, no database needed
 ```
 
 ---
@@ -189,7 +214,8 @@ src/store.js       Postgres or a JSON file, behind one interface
 src/server.js      the API and the static app, one process
 public/            the browser app — app.js, styles.css, index.html
 src/auth.js        passwords, sessions, roles and register permissions
-test/              37 tests over the parts that would fail silently
+src/report.js      the printable Engineering Department Updates sheet
+test/              40 tests over the parts that would fail silently
 ```
 
 The browser never carries its own copy of the register definitions — it reads them

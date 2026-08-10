@@ -37,6 +37,7 @@ import {
   verifyToken,
 } from './auth.js';
 import { buildWorkbook, inspectWorkbook, readSheet } from './excel.js';
+import { buildReport } from './report.js';
 import { sanitiseData, summarise } from './query.js';
 import {
   AREA_OPTIONS,
@@ -835,6 +836,73 @@ export async function createApp(env = process.env) {
       );
       res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
       res.send(Buffer.from(file.content));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ---- PDF report ---------------------------------------------------------
+
+  app.get('/api/report.pdf', requireAccess('read'), async (req, res, next) => {
+    try {
+      const records = scopeRecords(req, await store.all(null));
+      const summary = summarise(records);
+      summary.byRegister = summary.byRegister.filter((r) => mayUseRegister(req, r.id));
+
+      const allowed = req.user?.registers ?? [];
+      const pdf = await buildReport({
+        summary,
+        // Short codes: the attention table's register column is narrow, and
+        // "CTS Recommendation" wrapped to three lines in it.
+        registerNames: new Map(REGISTERS.map((r) => [r.id, r.short])),
+        logo: await store.getSetting('report_logo'),
+        generatedBy: req.user?.name ?? null,
+        // A restricted account's report must say what it covers, or it reads as
+        // the whole department's position when it is only part of it.
+        scopeNote: allowed.length
+          ? `Covers ${allowed.map((id) => getRegister(id)?.name ?? id).join(', ')} only.`
+          : null,
+      });
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="Engineering_Department_Updates_${new Date().toISOString().slice(0, 10)}.pdf"`,
+      );
+      res.send(pdf);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /** The logo printed on the report — uploaded once by an admin. */
+  app.get('/api/report/logo', requireAccess('read'), async (_req, res, next) => {
+    try {
+      res.json({ logo: await store.getSetting('report_logo') });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put('/api/report/logo', requireAccess('manage'), async (req, res, next) => {
+    try {
+      const logo = req.body?.logo;
+
+      if (logo === null || logo === '') {
+        await store.setSetting('report_logo', '');
+        return res.json({ ok: true, logo: null });
+      }
+
+      // A data URI, so the report needs nothing from the network when it prints.
+      if (typeof logo !== 'string' || !/^data:image\/(png|jpeg|jpg);base64,/.test(logo)) {
+        return asError(res, 400, 'Upload a PNG or JPG image.');
+      }
+      if (logo.length > 600_000) {
+        return asError(res, 400, 'That image is too large — use one under about 400 KB.');
+      }
+
+      await store.setSetting('report_logo', logo);
+      res.json({ ok: true });
     } catch (error) {
       next(error);
     }
