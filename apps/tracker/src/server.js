@@ -233,7 +233,15 @@ export async function createApp(env = process.env) {
   // ---- Open endpoints -----------------------------------------------------
 
   app.get('/api/health', async (_req, res) => {
-    res.json({ ok: true, storage: store.kind, registers: REGISTERS.length });
+    res.json({
+      ok: true,
+      storage: store.kind,
+      registers: REGISTERS.length,
+      // Named capabilities rather than a version string: this answers "is the
+      // thing I just deployed actually running?" without anyone reading a log.
+      features: ['accounts', 'register-permissions', 'settings-password-confirm'],
+      accounts: await store.countUsers(),
+    });
   });
 
   app.get('/api/config', (_req, res) => {
@@ -896,9 +904,27 @@ export async function createApp(env = process.env) {
 
   // ---- Static app ---------------------------------------------------------
 
-  app.use(express.static(PUBLIC_DIR, { index: 'index.html', maxAge: '1h' }));
+  /**
+   * Serve the app so a deploy is visible on the next reload.
+   *
+   * These files were cached for an hour, which meant a fix could be deployed,
+   * confirmed running in the logs, and still not reach anybody's browser until
+   * the hour was up — indistinguishable from the deploy not having worked.
+   * `maxAge: 0` with ETags means each load revalidates and gets a 304 when the
+   * file has not changed, so the cost is a header exchange rather than the file.
+   */
+  app.use(
+    express.static(PUBLIC_DIR, {
+      index: false,
+      etag: true,
+      maxAge: 0,
+      setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+    }),
+  );
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api/')) return asError(res, 404, 'Unknown endpoint.');
+    // The shell is never cached: it is what points at everything else.
+    res.setHeader('Cache-Control', 'no-store');
     res.sendFile(join(PUBLIC_DIR, 'index.html'), (error) => (error ? next(error) : undefined));
   });
 
