@@ -22,6 +22,7 @@ import express from 'express';
 import multer from 'multer';
 
 import {
+  CONFIRM_TTL_MS,
   ROLES,
   ROLE_DESCRIPTIONS,
   buildUser,
@@ -182,6 +183,22 @@ export async function createApp(env = process.env) {
           : 'Your account has view-only access. Ask an admin if you need to make changes.',
       );
     }
+
+    // Managing accounts needs the password again, recently.
+    //
+    // Being signed in is not enough for the one screen that decides who gets in:
+    // an admin who walks away from an unlocked browser would otherwise be leaving
+    // the permissions open to whoever sits down next.
+    if (capability === 'manage') {
+      const confirmed = verifyToken(req.get('x-confirm-token'), sessionSecret, 'confirm');
+      if (confirmed !== req.user.id) {
+        return res.status(403).json({
+          error: 'Confirm your password to open Settings.',
+          needsConfirmation: true,
+        });
+      }
+    }
+
     next();
   };
 
@@ -310,6 +327,25 @@ export async function createApp(env = process.env) {
       }
 
       res.json(await issue(found));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /** Re-check the signed-in account's own password, for Settings. */
+  app.post('/api/auth/confirm', requireAccess('read'), async (req, res, next) => {
+    try {
+      if (!req.user) return asError(res, 401, 'Please sign in.');
+
+      const found = await store.findUserById(req.user.id);
+      if (!verifyPassword(req.body?.password ?? '', found.password_hash)) {
+        return asError(res, 401, 'That password is not right.');
+      }
+
+      res.json({
+        confirmToken: signToken(found.id, sessionSecret, CONFIRM_TTL_MS, 'confirm'),
+        expiresInMs: CONFIRM_TTL_MS,
+      });
     } catch (error) {
       next(error);
     }

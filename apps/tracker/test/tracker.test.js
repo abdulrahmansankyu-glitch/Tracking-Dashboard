@@ -594,25 +594,53 @@ async function withAdmin(run) {
       })
     ).json();
 
-    const as = (token) => ({
-      get: (path) => fetch(base + path, { headers: token ? { authorization: `Bearer ${token}` } : {} }),
-      post: (path, body) => post(path, body, token),
-      patch: (path, body) =>
-        fetch(base + path, {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-          body: JSON.stringify(body),
-        }),
-      del: (path) =>
-        fetch(base + path, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } }),
-    });
+    // Managing accounts needs a recent password confirmation as well as a session.
+    const confirmFor = async (token, password) =>
+      (
+        await (
+          await fetch(`${base}/api/auth/confirm`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+            body: JSON.stringify({ password }),
+          })
+        ).json()
+      ).confirmToken;
 
-    return run({ base, setup, as, post });
+    const adminConfirm = await confirmFor(setup.token, 'shp-tracker-2026');
+
+    const as = (token, confirmToken = null) => {
+      const headers = (extra = {}) => ({
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(confirmToken ? { 'x-confirm-token': confirmToken } : {}),
+        ...extra,
+      });
+      return {
+        get: (path) => fetch(base + path, { headers: headers() }),
+        post: (path, body) =>
+          fetch(base + path, {
+            method: 'POST',
+            headers: headers({ 'content-type': 'application/json' }),
+            body: JSON.stringify(body),
+          }),
+        patch: (path, body) =>
+          fetch(base + path, {
+            method: 'PATCH',
+            headers: headers({ 'content-type': 'application/json' }),
+            body: JSON.stringify(body),
+          }),
+        del: (path) => fetch(base + path, { method: 'DELETE', headers: headers() }),
+      };
+    };
+
+    // The admin helper carries the confirmation; `as(token)` alone does not.
+    const asAdmin = () => as(setup.token, adminConfirm);
+
+    return run({ base, setup, as, asAdmin, post, confirmFor });
   });
 }
 
 test('the first account becomes an admin, and the email is stored lowercased', async () => {
-  await withAdmin(async ({ setup, as }) => {
+  await withAdmin(async ({ setup, as, asAdmin }) => {
     assert.equal(setup.user.role, 'admin');
     assert.equal(setup.user.email, 'abdul@example.com', 'so signing in is not case-sensitive');
     assert.ok(setup.token);
@@ -656,8 +684,8 @@ test('a wrong password and an unknown email are refused identically', async () =
 });
 
 test('a viewer can read but cannot change anything', async () => {
-  await withAdmin(async ({ setup, as, base }) => {
-    const admin = as(setup.token);
+  await withAdmin(async ({ setup, as, asAdmin, base }) => {
+    const admin = asAdmin();
     await admin.post('/api/users', {
       name: 'Nadeem',
       email: 'nadeem@example.com',
@@ -687,8 +715,8 @@ test('a viewer can read but cannot change anything', async () => {
 });
 
 test('an editor limited to one register cannot reach the others', async () => {
-  await withAdmin(async ({ setup, as, base }) => {
-    const admin = as(setup.token);
+  await withAdmin(async ({ setup, as, asAdmin, base }) => {
+    const admin = asAdmin();
 
     // Seed a row in each of two registers, as the admin.
     await admin.post('/api/records', { register: 'iws', data: { iwsNumber: 'IWS-1' } });
@@ -734,8 +762,8 @@ test('an editor limited to one register cannot reach the others', async () => {
 });
 
 test('the last admin cannot lock everyone out', async () => {
-  await withAdmin(async ({ setup, as }) => {
-    const admin = as(setup.token);
+  await withAdmin(async ({ setup, as, asAdmin }) => {
+    const admin = asAdmin();
 
     const demote = await admin.patch(`/api/users/${setup.user.id}`, { role: 'viewer' });
     assert.equal(demote.status, 400, 'demoting the only admin would leave nobody able to undo it');
@@ -755,8 +783,8 @@ test('the last admin cannot lock everyone out', async () => {
 });
 
 test('a password is checked before it is accepted', async () => {
-  await withAdmin(async ({ setup, as }) => {
-    const admin = as(setup.token);
+  await withAdmin(async ({ setup, as, asAdmin }) => {
+    const admin = asAdmin();
     const weak = await admin.post('/api/users', {
       name: 'Test',
       email: 'weak@example.com',
@@ -795,4 +823,58 @@ test('a tampered or expired session token is refused', async () => {
   assert.equal(verifyToken(`${token}x`, secret), null);
   assert.equal(verifyToken(signToken('user-1', secret, -1000), secret), null, 'expired');
   assert.equal(verifyToken('', secret), null);
+});
+
+test('Settings needs the password again, even for a signed-in admin', async () => {
+  await withAdmin(async ({ setup, as, asAdmin, confirmFor, base }) => {
+    // A valid admin session on its own is not enough — this is the whole point:
+    // an unattended, still-signed-in browser must not be able to change access.
+    const sessionOnly = as(setup.token);
+    const refused = await sessionOnly.get('/api/users');
+    assert.equal(refused.status, 403);
+    assert.equal((await refused.json()).needsConfirmation, true);
+
+    // Nor may the session token be replayed as the confirmation.
+    const replayed = as(setup.token, setup.token);
+    assert.equal((await replayed.get('/api/users')).status, 403);
+
+    // A wrong password does not produce one.
+    const wrong = await fetch(`${base}/api/auth/confirm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${setup.token}` },
+      body: JSON.stringify({ password: 'not-my-password' }),
+    });
+    assert.equal(wrong.status, 401);
+
+    // With the real password it opens.
+    assert.equal((await asAdmin().get('/api/users')).status, 200);
+
+    // Every managing route is behind it, not just the listing.
+    assert.equal((await sessionOnly.post('/api/users', {
+      name: 'X', email: 'x@example.com', password: 'a-long-password',
+    })).status, 403);
+    assert.equal((await sessionOnly.patch(`/api/users/${setup.user.id}`, { name: 'Renamed' })).status, 403);
+    assert.equal((await sessionOnly.del(`/api/users/${setup.user.id}`)).status, 403);
+
+    // A confirmation belongs to one account and expires.
+    const { signToken, verifyToken } = await import('../src/auth.js');
+    assert.equal(verifyToken(signToken('someone', 's', 60000, 'confirm'), 's', 'session'), null);
+    assert.equal(verifyToken(signToken('someone', 's', -1, 'confirm'), 's', 'confirm'), null);
+
+    // A viewer cannot confirm their way into Settings either.
+    const admin = asAdmin();
+    await admin.post('/api/users', {
+      name: 'Nadeem', email: 'nadeem@example.com', password: 'inspection-2026', role: 'viewer',
+    });
+    const login = await (
+      await fetch(`${base}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'nadeem@example.com', password: 'inspection-2026' }),
+      })
+    ).json();
+    const viewerConfirm = await confirmFor(login.token, 'inspection-2026');
+    assert.ok(viewerConfirm, 'a viewer can confirm their own password');
+    assert.equal((await as(login.token, viewerConfirm).get('/api/users')).status, 403);
+  });
 });

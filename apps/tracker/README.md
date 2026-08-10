@@ -110,7 +110,7 @@ it uses that instead; the tables are created on boot.
 | `TRACKER_DATA_FILE` | `data/tracker.json` | Where the JSON store lives |
 
 ```bash
-pnpm --filter @intoto/tracker test     # 36 tests, no database needed
+pnpm --filter @intoto/tracker test     # 37 tests, no database needed
 ```
 
 ---
@@ -163,6 +163,13 @@ Restrictions are enforced on the server, not by hiding buttons. Hidden buttons a
 for clarity; the API refuses the request either way, and the tests check the
 refusals rather than the hiding.
 
+**Opening Settings asks for the password again**, even for an admin who is already
+signed in — an admin who steps away from an unlocked browser would otherwise be
+leaving the team's permissions open to whoever sits down next. The confirmation
+lasts fifteen minutes and is held in memory only, so closing the tab ends it. A
+session token cannot be replayed as a confirmation; the two are signed for
+different purposes.
+
 An admin cannot demote or switch off the last remaining admin — it is the one
 change that could not be undone from inside the app.
 
@@ -182,7 +189,7 @@ src/store.js       Postgres or a JSON file, behind one interface
 src/server.js      the API and the static app, one process
 public/            the browser app — app.js, styles.css, index.html
 src/auth.js        passwords, sessions, roles and register permissions
-test/              36 tests over the parts that would fail silently
+test/              37 tests over the parts that would fail silently
 ```
 
 The browser never carries its own copy of the register definitions — it reads them

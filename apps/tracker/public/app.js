@@ -97,6 +97,9 @@ const state = {
   me: null, // the signed-in account
   authState: null, // { needsSetup, requiresSetupCode, roles, disabled }
   users: null, // the team, for admins
+  confirmToken: '', // password re-confirmation for Settings — memory only, on purpose
+  confirmExpires: 0,
+  confirmPrompt: null, // { error } while asking
   theme: localStorage.getItem('tracker.theme') ?? 'auto',
   gate: null, // 'setup' | 'login' | 'name' | null
   dashboard: null,
@@ -133,6 +136,7 @@ async function api(path, options = {}) {
   if (state.user) headers['x-user-name'] = state.user;
   if (state.accessCode) headers['x-access-code'] = state.accessCode;
   if (state.token) headers.authorization = `Bearer ${state.token}`;
+  if (state.confirmToken) headers['x-confirm-token'] = state.confirmToken;
   if (options.json !== undefined) {
     headers['content-type'] = 'application/json';
     options.body = JSON.stringify(options.json);
@@ -150,7 +154,16 @@ async function api(path, options = {}) {
   // The sign-in routes are the one place a 401 is an answer rather than a
   // problem — bouncing somebody back to the form they are already looking at
   // would replace "that password is wrong" with something vaguer.
-  const isAuthRoute = ['/api/session', '/api/auth/login', '/api/auth/setup', '/api/auth/password'].includes(path);
+  // `/api/auth/confirm` belongs here too: a 401 from it means "that password is
+  // wrong", not "your session ended". Treating it as the latter signed the admin
+  // out for one mistyped character.
+  const isAuthRoute = [
+    '/api/session',
+    '/api/auth/login',
+    '/api/auth/setup',
+    '/api/auth/password',
+    '/api/auth/confirm',
+  ].includes(path);
   if (response.status === 401 && !isAuthRoute) {
     signOut({ silent: true });
     throw new Error('Please sign in.');
@@ -407,11 +420,24 @@ function go(view, registerId = null) {
     state.importState = null;
   }
 
+  // Settings asks for the password first. The view stays where it was, so the
+  // page behind the prompt is the one they were on — cancelling leaves them
+  // there rather than on a Settings page they never got into.
+  if (view === 'settings' && !hasConfirmation()) {
+    state.view = 'dashboard';
+    state.confirmPrompt = { error: null };
+    render();
+    return;
+  }
+
   if (view === 'dashboard') loadDashboard();
   else if (view === 'register') {
     state.query = defaultQuery();
     state.list = null;
     loadList();
+  } else if (view === 'settings') {
+    state.users = null;
+    render();
   } else if (view === 'activity') {
     api('/api/activity')
       .then((data) => {
@@ -439,10 +465,90 @@ function myRegisters() {
   return allowed.length ? all.filter((r) => allowed.includes(r.id)) : all;
 }
 
+/** Is the password confirmation still fresh? */
+const hasConfirmation = () => Boolean(state.confirmToken) && Date.now() < state.confirmExpires;
+
+/**
+ * Ask for the signed-in account's own password before opening Settings.
+ *
+ * Being signed in is not enough for the screen that decides who gets in: an admin
+ * who steps away from an unlocked browser would otherwise be leaving the team's
+ * permissions open to whoever sits down next. The confirmation lives in memory
+ * only and lasts fifteen minutes, so closing the tab ends it.
+ */
+function renderConfirmPrompt() {
+  let password = '';
+
+  const close = () => {
+    state.confirmPrompt = null;
+    render();
+  };
+
+  return h(
+    'div',
+    {
+      class: 'scrim modal-centre',
+      onclick: (event) => {
+        if (event.target === event.currentTarget) close();
+      },
+    },
+    h(
+      'form',
+      {
+        class: 'modal',
+        onsubmit: async (event) => {
+          event.preventDefault();
+          try {
+            const result = await api('/api/auth/confirm', { json: { password } });
+            state.confirmToken = result.confirmToken;
+            state.confirmExpires = Date.now() + result.expiresInMs - 5000;
+            state.confirmPrompt = null;
+            go('settings');
+          } catch (error) {
+            state.confirmPrompt = { error: error.message };
+            render();
+          }
+        },
+      },
+      h('h2', null, 'Confirm your password'),
+      h(
+        'p',
+        { class: 'hint', style: 'margin: 8px 0 16px' },
+        'Settings decides who can open this tracker and what they can change, so it asks again even though you are signed in.',
+      ),
+      state.confirmPrompt?.error &&
+        h('div', { class: 'banner error', style: 'margin-bottom: 12px' }, state.confirmPrompt.error),
+      h(
+        'label',
+        { class: 'field' },
+        h('span', null, `Password for ${state.me?.email ?? 'your account'}`),
+        h('input', {
+          type: 'password',
+          id: 'confirm-password',
+          autocomplete: 'current-password',
+          autofocus: 'autofocus',
+          oninput: (e) => {
+            password = e.target.value;
+          },
+        }),
+      ),
+      h(
+        'div',
+        { style: 'margin-top: 18px; display: flex; gap: 8px; justify-content: flex-end' },
+        h('button', { class: 'btn', type: 'button', onclick: close }, 'Cancel'),
+        h('button', { class: 'btn primary', type: 'submit' }, 'Open Settings'),
+      ),
+    ),
+  );
+}
+
 function signOut({ silent = false } = {}) {
   state.token = '';
   state.me = null;
   state.users = null;
+  state.confirmToken = '';
+  state.confirmExpires = 0;
+  state.confirmPrompt = null;
   localStorage.removeItem('tracker.token');
   state.gate = 'login';
   state.dashboard = null;
@@ -1902,6 +2008,12 @@ const userDraft = { registers: [] };
  * as a role would mean inventing a role per combination.
  */
 function renderSettings() {
+  if (!hasConfirmation()) {
+    state.view = 'dashboard';
+    state.confirmPrompt = { error: null };
+    return h('div', { class: 'content' }, h('div', { class: 'empty' }, 'Confirm your password to continue.'));
+  }
+
   if (!canManage()) {
     return h('div', { class: 'content' }, h('div', { class: 'banner error' }, 'Only an admin can open Settings.'));
   }
@@ -2342,6 +2454,10 @@ function render() {
     ),
   );
 
+  if (state.confirmPrompt) {
+    root.append(renderConfirmPrompt());
+    if (!focusId) $('#confirm-password')?.focus();
+  }
   if (state.drawer) root.append(renderDrawer());
   if (state.toast) root.append(h('div', { class: 'toast' }, state.toast));
 

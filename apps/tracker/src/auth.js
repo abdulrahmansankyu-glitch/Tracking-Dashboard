@@ -100,19 +100,33 @@ export function passwordProblem(password) {
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
+/**
+ * How long a password confirmation lasts before Settings asks again.
+ *
+ * Short on purpose: the point is that an unattended, still-signed-in browser
+ * cannot be used to change who has access. Long enough to finish adding a few
+ * accounts without retyping between each one.
+ */
+export const CONFIRM_TTL_MS = 15 * 60 * 1000;
+
 const b64url = (buffer) => Buffer.from(buffer).toString('base64url');
 
 function sign(data, secret) {
   return createHmac('sha256', secret).update(data).digest('base64url');
 }
 
-export function signToken(userId, secret, ttlMs = TOKEN_TTL_MS) {
-  const body = b64url(JSON.stringify({ sub: userId, exp: Date.now() + ttlMs }));
+/**
+ * `purpose` keeps the two kinds of token apart. A session token must not be
+ * usable as a password confirmation — otherwise merely being signed in would
+ * satisfy the check that exists precisely because being signed in is not enough.
+ */
+export function signToken(userId, secret, ttlMs = TOKEN_TTL_MS, purpose = 'session') {
+  const body = b64url(JSON.stringify({ sub: userId, exp: Date.now() + ttlMs, pur: purpose }));
   return `${body}.${sign(body, secret)}`;
 }
 
-/** Returns the user id, or null when the token is absent, forged or expired. */
-export function verifyToken(token, secret) {
+/** Returns the user id, or null when the token is absent, forged, expired or of the wrong kind. */
+export function verifyToken(token, secret, purpose = 'session') {
   const [body, signature] = String(token ?? '').split('.');
   if (!body || !signature) return null;
 
@@ -125,6 +139,7 @@ export function verifyToken(token, secret) {
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
     if (!payload?.sub || typeof payload.exp !== 'number') return null;
     if (payload.exp < Date.now()) return null;
+    if ((payload.pur ?? 'session') !== purpose) return null;
     return payload.sub;
   } catch {
     return null;
