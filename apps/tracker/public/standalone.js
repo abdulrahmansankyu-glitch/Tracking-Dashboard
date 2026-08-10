@@ -339,7 +339,13 @@ globalThis.__trackerLocalApi = async function localApi(path, options = {}) {
       return json({ results });
     }
 
-    if (pathname === '/api/imports') return json({ imports: state.imports });
+    if (pathname === '/api/imports') {
+      const register = params.get('register');
+      const imports = register
+        ? state.imports.filter((e) => (e.results ?? []).some((r) => r.register === register))
+        : state.imports;
+      return json({ imports });
+    }
 
     if (pathname === '/api/export') {
       const requested = params.get('register');

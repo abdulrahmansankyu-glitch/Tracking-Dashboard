@@ -102,6 +102,7 @@ const state = {
   drawer: null, // { record, registerId, isNew }
   importState: null,
   imports: null,
+  importsScope: null,
   activity: null,
   busy: false,
   error: null,
@@ -630,9 +631,6 @@ function renderDashboard() {
   if (!data) return h('div', { class: 'empty' }, h('span', { class: 'spin' }), ' Loading…');
 
   const t = data.totals;
-  const maxBin = Math.max(1, ...data.dueBuckets.map((b) => b.count));
-  const maxPriority = Math.max(1, ...data.byPriority.map((p) => p.open));
-  const maxLoad = Math.max(1, ...data.byActionBy.map((p) => p.open));
 
   return h(
     'div',
@@ -641,85 +639,12 @@ function renderDashboard() {
     h(
       'div',
       { class: 'kpis' },
-      kpi('Open jobs', t.open, `${t.all} tracked in total`),
-      kpi('Overdue', t.overdue, 'past their due date', t.overdue > 0 ? 'is-critical' : null),
+      kpi('Total Jobs', t.all, 'across all seven registers'),
+      kpi('Open', t.open, 'still to do'),
+      kpi('Closed', t.closed, 'completed, cancelled or archived'),
       kpi(`Due in ${state.config.dueSoonDays} days`, t.dueSoon, 'the month ahead'),
-      kpi('No due date', t.undated, 'need a date set'),
-      kpi('Completed', t.completed, 'closed out'),
-    ),
-
-    h(
-      'div',
-      { class: 'grid-2' },
-
-      h(
-        'section',
-        { class: 'card' },
-        h('header', null, h('h2', null, 'When work is due'), h('span', { class: 'hint' }, 'open jobs only')),
-        h(
-          'div',
-          { class: 'bars' },
-          data.dueBuckets.map((bucket, i) =>
-            barRow(bucket.label, [{ value: bucket.count, color: COLOR.bin[i], label: bucket.label }], maxBin),
-          ),
-        ),
-      ),
-
-      h(
-        'section',
-        { class: 'card' },
-        h('header', null, h('h2', null, 'Open jobs by priority')),
-        h(
-          'div',
-          { class: 'bars' },
-          data.byPriority.map((row) =>
-            barRow(
-              row.priority,
-              [{ value: row.open, color: COLOR.priority[row.priority], label: row.priority }],
-              maxPriority,
-              row.overdue ? `${row.open}  (${row.overdue} late)` : row.open,
-            ),
-          ),
-        ),
-      ),
-    ),
-
-    h(
-      'section',
-      { class: 'card' },
-      h(
-        'header',
-        null,
-        h('h2', null, 'Workload by action owner'),
-        h('span', { class: 'hint' }, 'open jobs, most overdue first'),
-      ),
-      legend([
-        { label: 'Overdue', color: COLOR.overdue },
-        { label: `Due within ${state.config.dueSoonDays} days`, color: COLOR.dueSoon },
-        { label: 'Later or undated', color: COLOR.later },
-      ]),
-      data.byActionBy.length
-        ? h(
-            'div',
-            { class: 'bars' },
-            data.byActionBy.map((person) =>
-              barRow(
-                person.name,
-                [
-                  { value: person.overdue, color: COLOR.overdue, label: 'Overdue' },
-                  { value: person.dueSoon, color: COLOR.dueSoon, label: 'Due soon' },
-                  {
-                    value: person.open - person.overdue - person.dueSoon,
-                    color: COLOR.later,
-                    label: 'Later or undated',
-                  },
-                ],
-                maxLoad,
-                person.overdue ? `${person.open}  (${person.overdue} late)` : person.open,
-              ),
-            ),
-          )
-        : h('div', { class: 'empty' }, 'No open jobs assigned yet.'),
+      kpi('Completed', t.completed, 'finished, not cancelled'),
+      kpi('Overdue', t.overdue, 'past their due date', t.overdue > 0 ? 'is-critical' : null),
     ),
 
     h(
@@ -734,7 +659,7 @@ function renderDashboard() {
       legend([
         { label: 'Overdue', color: COLOR.overdue },
         { label: `Due within ${state.config.dueSoonDays} days`, color: COLOR.dueSoon },
-        { label: 'Open, later', color: COLOR.later },
+        { label: 'Open', color: COLOR.later },
         { label: 'Closed', color: 'var(--good)' },
       ]),
       h(
@@ -749,7 +674,7 @@ function renderDashboard() {
               [
                 { value: row.overdue, color: COLOR.overdue, label: 'Overdue' },
                 { value: row.dueSoon, color: COLOR.dueSoon, label: 'Due soon' },
-                { value: row.later, color: COLOR.later, label: 'Open, later' },
+                { value: row.later, color: COLOR.later, label: 'Open' },
                 { value: row.closed, color: 'var(--good)', label: 'Closed' },
               ],
               row.total,
@@ -1168,6 +1093,8 @@ function renderRegister() {
               ),
             ),
           ),
+
+    renderImportHistory(register.id),
   );
 }
 
@@ -1727,9 +1654,12 @@ function renderImport() {
  * Kept because "which file did these rows come from?" is a real question months
  * later, and the answer should be the file itself rather than somebody's memory.
  */
-function renderImportHistory() {
-  if (state.imports === null) {
-    api('/api/imports')
+function renderImportHistory(registerId = null) {
+  const scope = registerId ?? 'all';
+
+  if (state.imports === null || state.importsScope !== scope) {
+    state.importsScope = scope;
+    api(`/api/imports${registerId ? `?register=${registerId}` : ''}`)
       .then((data) => {
         state.imports = data.imports;
         render();
@@ -1750,7 +1680,7 @@ function renderImportHistory() {
     h(
       'header',
       null,
-      h('h2', null, 'Previously imported'),
+      h('h2', null, registerId ? 'Files imported into this register' : 'Previously imported'),
       h('span', { class: 'hint' }, 'the last 20 uploads'),
     ),
     h(
@@ -1766,7 +1696,7 @@ function renderImportHistory() {
             'tr',
             null,
             h('th', null, 'File'),
-            h('th', null, 'Sheets imported'),
+            !registerId && h('th', null, 'Sheets imported'),
             h('th', null, 'Uploaded by'),
             h('th', null, 'When'),
             h('th', { class: 'num' }, 'Rows'),
@@ -1781,20 +1711,23 @@ function renderImportHistory() {
               'tr',
               null,
               h('td', null, h('span', { class: 'cell-ref' }, entry.filename)),
-              h(
-                'td',
-                { class: 'muted' },
-                (entry.results ?? [])
-                  .filter((r) => r.registerName)
-                  .map((r) => r.registerName)
-                  .join(', ') || '—',
-              ),
+              !registerId &&
+                h(
+                  'td',
+                  { class: 'muted' },
+                  (entry.results ?? [])
+                    .filter((r) => r.registerName)
+                    .map((r) => r.registerName)
+                    .join(', ') || '—',
+                ),
               h('td', null, entry.uploadedBy ?? '—'),
               h('td', { class: 'muted' }, fmtWhen(entry.uploadedAt)),
               h(
                 'td',
                 { class: 'num' },
-                (entry.results ?? []).reduce((sum, r) => sum + (r.imported ?? 0), 0),
+                (entry.results ?? [])
+                  .filter((r) => !registerId || r.register === registerId)
+                  .reduce((sum, r) => sum + (r.imported ?? 0), 0),
               ),
               h(
                 'td',

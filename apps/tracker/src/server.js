@@ -401,9 +401,16 @@ export async function createApp(env = process.env) {
     }
   });
 
-  app.get('/api/imports', requireAccess, async (_req, res, next) => {
+  app.get('/api/imports', requireAccess, async (req, res, next) => {
     try {
-      res.json({ imports: await store.listImports() });
+      const all = await store.listImports();
+      // Each register page shows the files that landed in it, so "where did this
+      // row come from?" is answered on the page holding the row.
+      const register = req.query.register ? String(req.query.register) : null;
+      const imports = register
+        ? all.filter((entry) => (entry.results ?? []).some((r) => r.register === register))
+        : all;
+      res.json({ imports });
     } catch (error) {
       next(error);
     }

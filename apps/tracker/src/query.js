@@ -301,10 +301,13 @@ export function summarise(records) {
     totals: {
       all: records.length,
       open: open.length,
+      // Closed is everything no longer on somebody's plate; completed is the subset
+      // that was actually finished, as opposed to cancelled or archived.
+      closed: records.length - open.length,
+      completed: records.filter((r) => r.status === 'Completed').length,
       overdue: overdue.length,
       dueSoon: dueSoon.length,
       undated: open.filter((r) => !r.dueDate).length,
-      completed: records.filter((r) => r.status === 'Completed').length,
     },
     byRegister: REGISTERS.map((register) => {
       const rows = records.filter((r) => r.register === register.id);
