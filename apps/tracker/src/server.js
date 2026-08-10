@@ -318,6 +318,7 @@ export async function createApp(env = process.env) {
 
       const actor = actorOf(req);
       const results = [];
+      const cleared = new Set();
 
       for (const selection of selections) {
         const register = getRegister(selection.register);
@@ -334,10 +335,17 @@ export async function createApp(env = process.env) {
           continue;
         }
 
-        // "replace" is how a team that lives in Excel actually re-uploads: the sheet
-        // is the truth, and yesterday's rows should not linger beside today's.
-        const replaced =
-          selection.mode === 'replace' ? await store.clearRegister(register.id) : 0;
+        // "Replace" clears the register once per upload, not once per sheet.
+        // A workbook can carry several sheets for the same register — SHP and DCU
+        // master sheets both feeding IWS — and clearing per sheet meant the second
+        // one deleted the rows the first had just imported, leaving only the last
+        // sheet's rows behind. The intent of "replace" is that this file is the
+        // master copy for that register, so its sheets land together.
+        let replaced = 0;
+        if (selection.mode === 'replace' && !cleared.has(register.id)) {
+          replaced = await store.clearRegister(register.id);
+          cleared.add(register.id);
+        }
 
         const source = `import:${pending.filename}`;
         const rows = extracted.rows.map((data) =>

@@ -1237,6 +1237,18 @@ function renderDrawer() {
 
 // ------------------------------------------------------------------ import --
 
+/** Registers that more than one selected sheet feeds, as [name, count] pairs. */
+function combinedRegisters(imp) {
+  const counts = new Map();
+  for (const choice of imp.choices ?? []) {
+    if (!choice.include || !choice.register) continue;
+    counts.set(choice.register, (counts.get(choice.register) ?? 0) + 1);
+  }
+  return [...counts]
+    .filter(([, count]) => count > 1)
+    .map(([id, count]) => [registerById(id)?.name ?? id, count]);
+}
+
 function renderImport() {
   const imp = state.importState;
 
@@ -1447,6 +1459,16 @@ function renderImport() {
         { class: 'banner info' },
         'Filled in from the last time this file was imported. Change anything that is different this month.',
       ),
+    // Several sheets feeding one register is normal — an SHP master sheet and a
+    // DCU master sheet both belong in IWS — but it is worth saying out loud that
+    // they combine, because "Replace" on each of them reads like each one wins.
+    combinedRegisters(imp).map(([name, count]) =>
+      h(
+        'div',
+        { class: 'banner info' },
+        `${count} sheets go into ${name}. They will be added together, not one over the other.`,
+      ),
+    ),
     h(
       'section',
       { class: 'card' },

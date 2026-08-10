@@ -263,6 +263,7 @@ globalThis.__trackerLocalApi = async function localApi(path, options = {}) {
       if (!selections.length) return fail(400, 'Choose at least one sheet to import.');
 
       const results = [];
+      const cleared = new Set();
       for (const selection of selections) {
         const register = getRegister(selection.register);
         if (!register) {
@@ -278,11 +279,18 @@ globalThis.__trackerLocalApi = async function localApi(path, options = {}) {
           continue;
         }
 
+        // "Replace" clears the register once per upload, not once per sheet.
+        // A workbook can carry several sheets for the same register — SHP and DCU
+        // master sheets both feeding IWS — and clearing per sheet meant the second
+        // one deleted the rows the first had just imported, leaving only the last
+        // sheet's rows behind. The intent of "replace" is that this file is the
+        // master copy for that register, so its sheets land together.
         let replaced = 0;
-        if (selection.mode === 'replace') {
+        if (selection.mode === 'replace' && !cleared.has(register.id)) {
           const before = state.records.length;
           state.records = state.records.filter((r) => r.register !== register.id);
           replaced = before - state.records.length;
+          cleared.add(register.id);
         }
 
         const source = `import:${pending.filename}`;

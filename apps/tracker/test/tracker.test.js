@@ -7,6 +7,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import ExcelJS from 'exceljs';
@@ -28,7 +31,7 @@ import {
   toDateOnly,
   todayIso,
 } from '../src/registers.js';
-import { summarise } from '../src/server.js';
+import { createApp, summarise } from '../src/server.js';
 import { applyQuery, toApi, toRow } from '../src/store.js';
 
 /** Build a worksheet shaped like the team's files: banner row, then headers. */
@@ -418,4 +421,111 @@ test('a multi-register export carries a Summary sheet plus one sheet per registe
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
   assert.deepEqual(workbook.worksheets.map((w) => w.name), ['Summary', 'IWS', 'PZV']);
+});
+
+// --------------------------------------------------------- import commit ---
+
+/** Start the app on an ephemeral port over a throwaway JSON store. */
+async function withServer(run) {
+  const dir = await mkdtemp(join(tmpdir(), 'tracker-test-'));
+  const { app } = await createApp({ TRACKER_DATA_FILE: join(dir, 'data.json') });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    return await run(base);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test('two sheets replacing the same register do not erase each other', async () => {
+  // A real workbook carries an SHP master sheet and a DCU master sheet, both
+  // feeding IWS. Clearing per sheet meant the second wiped the first: 117 rows
+  // plus 17 rows landed as 17. "Replace" means this file is the master copy for
+  // the register, so its sheets replace it together.
+  const workbook = new ExcelJS.Workbook();
+  const headers = ['Ser.', 'IWS Number', 'Area', 'Unit ', 'Discipline', 'Description', 'Date Issued', 'Target Date'];
+
+  for (const [name, count, prefix] of [['SHP-Master', 3, 'SHP'], ['DCU-Master', 2, 'DCU']]) {
+    const sheet = workbook.addWorksheet(name);
+    sheet.getRow(1).values = [`${name} Tracking Sheet`];
+    sheet.getRow(2).values = headers;
+    for (let i = 1; i <= count; i += 1) {
+      sheet.getRow(2 + i).values = [i, `IWS-${prefix}-${i}`, prefix, '178', 'Mechanical', `Job ${i}`, '2026-01-01', '2026-12-31'];
+    }
+  }
+
+  const buffer = await workbook.xlsx.writeBuffer();
+
+  await withServer(async (base) => {
+    const form = new FormData();
+    form.append('file', new Blob([buffer]), 'master.xlsx');
+    const inspected = await (await fetch(`${base}/api/import/inspect`, { method: 'POST', body: form })).json();
+
+    const committed = await (
+      await fetch(`${base}/api/import/commit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          token: inspected.token,
+          selections: [
+            { sheet: 'SHP-Master', register: 'iws', mode: 'replace' },
+            { sheet: 'DCU-Master', register: 'iws', mode: 'replace' },
+          ],
+        }),
+      })
+    ).json();
+
+    assert.deepEqual(committed.results.map((r) => r.imported), [3, 2]);
+    // Only the first sheet clears; the second adds to it.
+    assert.deepEqual(committed.results.map((r) => r.replaced), [0, 0]);
+
+    const listed = await (await fetch(`${base}/api/records?register=iws&pageSize=100`)).json();
+    assert.equal(listed.total, 5, 'both sheets should survive the same upload');
+
+    const refs = listed.rows.map((r) => r.ref).sort();
+    assert.deepEqual(refs, ['IWS-DCU-1', 'IWS-DCU-2', 'IWS-SHP-1', 'IWS-SHP-2', 'IWS-SHP-3']);
+  });
+});
+
+test('a later upload still replaces what an earlier one imported', async () => {
+  const build = async (prefix, count) => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Master');
+    sheet.getRow(1).values = ['IWS Track'];
+    sheet.getRow(2).values = ['Ser.', 'IWS Number', 'Area', 'Unit ', 'Discipline', 'Description', 'Date Issued', 'Target Date'];
+    for (let i = 1; i <= count; i += 1) {
+      sheet.getRow(2 + i).values = [i, `IWS-${prefix}-${i}`, 'SHP', '178', 'Civil', `Job ${i}`, '2026-01-01', '2026-12-31'];
+    }
+    return workbook.xlsx.writeBuffer();
+  };
+
+  await withServer(async (base) => {
+    const upload = async (buffer) => {
+      const form = new FormData();
+      form.append('file', new Blob([buffer]), 'master.xlsx');
+      const inspected = await (await fetch(`${base}/api/import/inspect`, { method: 'POST', body: form })).json();
+      return (
+        await fetch(`${base}/api/import/commit`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            token: inspected.token,
+            selections: [{ sheet: 'Master', register: 'iws', mode: 'replace' }],
+          }),
+        })
+      ).json();
+    };
+
+    await upload(await build('OLD', 4));
+    const second = await upload(await build('NEW', 2));
+
+    assert.equal(second.results[0].replaced, 4, 'a fresh upload still clears the register');
+
+    const listed = await (await fetch(`${base}/api/records?register=iws&pageSize=100`)).json();
+    assert.equal(listed.total, 2);
+    assert.ok(listed.rows.every((r) => r.ref.startsWith('IWS-NEW')));
+  });
 });
