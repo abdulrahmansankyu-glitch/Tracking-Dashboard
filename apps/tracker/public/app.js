@@ -101,6 +101,7 @@ const state = {
   query: {},
   drawer: null, // { record, registerId, isNew }
   importState: null,
+  imports: null,
   activity: null,
   busy: false,
   error: null,
@@ -211,6 +212,42 @@ const dueChip = (record) =>
   h('span', { class: `chip s-${dueState(record.dueDate, record.status)}` }, dueLabel(record));
 
 /**
+ * One table cell, rendered according to the job that column does.
+ *
+ * Values come from the record's own stored columns, except priority and status,
+ * which come from the derived values — the sheets spell those a dozen ways ("P1",
+ * "Alarm", "On going", "Close") and a table that prints each spelling verbatim
+ * cannot be scanned. The date column carries its lateness chip so a register that
+ * shows no explicit status still shows what is late.
+ */
+function cell(register, record, field) {
+  const roles = register.roles;
+  const raw = record.data?.[field.key];
+
+  if (field.key === roles.priority) return h('td', null, priorityChip(record.priority));
+
+  if (field.key === roles.status) {
+    return h('td', null, record.status, raw && record.status !== raw ? h('div', { class: 'hint' }, raw) : null);
+  }
+
+  if (field.key === roles.due) {
+    return h('td', null, dueChip(record), record.dueDate && h('div', { class: 'hint' }, record.dueDate));
+  }
+
+  if (raw === undefined || raw === null || raw === '') return h('td', { class: 'muted' }, '—');
+
+  if (field.type === 'longtext') {
+    return h('td', null, h('span', { class: 'cell-title', title: String(raw) }, String(raw)));
+  }
+
+  if (field.type === 'number') return h('td', { class: 'num' }, String(raw));
+
+  if (field.key === roles.ref) return h('td', null, h('span', { class: 'cell-ref' }, String(raw)));
+
+  return h('td', null, String(raw));
+}
+
+/**
  * A horizontal bar. `segments` are drawn in order with a 2px surface gap, and the
  * total is always printed at the end so the value never depends on reading colour.
  */
@@ -236,6 +273,54 @@ function barRow(label, segments, max, note = null) {
         ),
     ),
     h('div', { class: 'b-value' }, note ?? total),
+  );
+}
+
+/**
+ * A ring showing how one register's work divides up.
+ *
+ * Four segments that sum to the register's total, so the ring is genuinely
+ * part-to-whole rather than a pie of unrelated numbers. Every segment is also
+ * printed as a labelled figure beside it — the ring shows the shape at a glance,
+ * the numbers carry the meaning, and nothing depends on telling two colours apart.
+ */
+function donut(segments, total, size = 104) {
+  const stroke = 15;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+
+  const arcs = segments
+    .filter((s) => s.value > 0)
+    .map((s) => {
+      const fraction = total > 0 ? s.value / total : 0;
+      // A 1.5px gap between arcs keeps neighbouring segments from reading as one.
+      const length = Math.max(0, fraction * circumference - 1.5);
+      const circle = `<circle cx="${size / 2}" cy="${size / 2}" r="${radius}"
+        fill="none" stroke="${s.color}" stroke-width="${stroke}"
+        stroke-dasharray="${length} ${circumference - length}"
+        stroke-dashoffset="${-offset}" stroke-linecap="butt"
+        transform="rotate(-90 ${size / 2} ${size / 2})"><title>${s.label}: ${s.value}</title></circle>`;
+      offset += fraction * circumference;
+      return circle;
+    })
+    .join('');
+
+  const ring = h('div', {
+    class: 'donut',
+    html: `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img"
+      aria-label="${segments.map((s) => `${s.label} ${s.value}`).join(', ')}">
+      <circle cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="none"
+        stroke="var(--plane)" stroke-width="${stroke}"/>
+      ${arcs}
+    </svg>`,
+  });
+
+  return h(
+    'div',
+    { class: 'donut-wrap' },
+    ring,
+    h('div', { class: 'donut-centre' }, h('strong', null, total), h('span', null, 'total')),
   );
 }
 
@@ -307,6 +392,13 @@ function go(view, registerId = null) {
   state.view = view;
   state.registerId = registerId;
   state.drawer = null;
+
+  // Coming back to Import after a finished run means starting another one, so the
+  // last run's summary steps aside. A half-finished run is left alone — someone who
+  // clicked away mid-confirm should find their sheet choices where they left them.
+  if (view === 'import' && ['done', 'error'].includes(state.importState?.stage)) {
+    state.importState = null;
+  }
 
   if (view === 'dashboard') loadDashboard();
   else if (view === 'register') {
@@ -633,6 +725,51 @@ function renderDashboard() {
     h(
       'section',
       { class: 'card' },
+      h(
+        'header',
+        null,
+        h('h2', null, 'Each register at a glance'),
+        h('span', { class: 'hint' }, 'click a register to open it'),
+      ),
+      legend([
+        { label: 'Overdue', color: COLOR.overdue },
+        { label: `Due within ${state.config.dueSoonDays} days`, color: COLOR.dueSoon },
+        { label: 'Open, later', color: COLOR.later },
+        { label: 'Closed', color: 'var(--good)' },
+      ]),
+      h(
+        'div',
+        { class: 'register-grid' },
+        data.byRegister.map((row) =>
+          h(
+            'button',
+            { class: 'register-card', onclick: () => go('register', row.id) },
+            h('h3', null, row.name),
+            donut(
+              [
+                { value: row.overdue, color: COLOR.overdue, label: 'Overdue' },
+                { value: row.dueSoon, color: COLOR.dueSoon, label: 'Due soon' },
+                { value: row.later, color: COLOR.later, label: 'Open, later' },
+                { value: row.closed, color: 'var(--good)', label: 'Closed' },
+              ],
+              row.total,
+            ),
+            h(
+              'dl',
+              { class: 'register-figures' },
+              figure('Open', row.open),
+              figure('Overdue', row.overdue, row.overdue ? 'is-critical' : null),
+              figure(`Due ≤${state.config.dueSoonDays}d`, row.dueSoon, row.dueSoon ? 'is-warning' : null),
+              figure('Closed', row.closed),
+            ),
+          ),
+        ),
+      ),
+    ),
+
+    h(
+      'section',
+      { class: 'card' },
       h('header', null, h('h2', null, 'Registers')),
       h(
         'div',
@@ -780,6 +917,14 @@ function kpi(label, value, note, tone = null) {
   );
 }
 
+const figure = (label, value, tone = null) =>
+  h(
+    'div',
+    { class: `figure ${tone ?? ''}` },
+    h('dt', null, label),
+    h('dd', null, value),
+  );
+
 const activityItem = (entry) =>
   h(
     'div',
@@ -800,6 +945,9 @@ function renderRegister() {
   const list = state.list;
   const q = state.query;
 
+  const byKey = new Map(register.fields.map((f) => [f.key, f]));
+  const columns = (register.tableColumns ?? []).map((key) => byKey.get(key)).filter(Boolean);
+
   const setQuery = (patch, reload = true) => {
     Object.assign(state.query, patch);
     if (!('page' in patch)) state.query.page = 1;
@@ -807,19 +955,42 @@ function renderRegister() {
     else render();
   };
 
+  /**
+   * Which of this register's own columns the list can sort by.
+   *
+   * Sorting runs on the derived values, so only the columns filling a role have a
+   * sort key. The rest are shown but not sortable — a header that looks clickable
+   * and then does nothing is worse than one that plainly is not.
+   */
+  const roles = register.roles;
+  const sortKeyFor = (fieldKey) =>
+    ({
+      [roles.ref]: 'ref',
+      [roles.title]: 'title',
+      [roles.due]: 'dueDate',
+      [roles.priority]: 'priority',
+      [roles.status]: 'status',
+      [roles.actionBy]: 'actionBy',
+      [roles.initiator]: 'initiator',
+      [roles.area]: 'area',
+    })[fieldKey] ?? null;
+
   const sortHeader = (label, key, extra = {}) =>
-    h(
-      'th',
-      {
-        class: `sortable ${extra.class ?? ''}`,
-        onclick: () =>
-          setQuery({
-            sort: key,
-            direction: q.sort === key && q.direction === 'asc' ? 'desc' : 'asc',
-          }),
-      },
-      `${label}${q.sort === key ? (q.direction === 'asc' ? ' ↑' : ' ↓') : ''}`,
-    );
+    key
+      ? h(
+          'th',
+          {
+            class: `sortable ${extra.class ?? ''}`,
+            tabindex: '0',
+            onclick: () =>
+              setQuery({
+                sort: key,
+                direction: q.sort === key && q.direction === 'asc' ? 'desc' : 'asc',
+              }),
+          },
+          `${label}${q.sort === key ? (q.direction === 'asc' ? ' ↑' : ' ↓') : ''}`,
+        )
+      : h('th', { class: extra.class ?? '' }, label);
 
   const select = (label, key, options, allLabel = 'All') =>
     h(
@@ -864,6 +1035,15 @@ function renderRegister() {
           },
         }),
       ),
+      // Area offers both plants whether or not this register has rows for them
+      // yet, so filtering to DCU is possible the moment the first DCU row lands.
+      byKey.has('area') &&
+        select(
+          'Area',
+          'area',
+          [...new Set([...(state.config.areas ?? []), ...state.filterOptions.area])],
+          'All areas',
+        ),
       select('Priority', 'priority', state.config.priorities),
       select('Status', 'status', state.config.statuses),
       select('Action by', 'actionBy', state.filterOptions.actionBy, 'Anyone'),
@@ -960,39 +1140,28 @@ function renderRegister() {
                 h(
                   'tr',
                   null,
-                  sortHeader('Ref', 'ref'),
-                  sortHeader('Description', 'title'),
-                  sortHeader('Priority', 'priority'),
-                  sortHeader('Status', 'status'),
-                  sortHeader('Due', 'dueDate'),
-                  sortHeader('Action by', 'actionBy'),
-                  sortHeader('Initiator', 'initiator'),
+                  // The sheets all open with a row number and the team reads by it,
+                  // so the position is shown — but computed from the current page
+                  // rather than stored, because a stored serial is wrong the moment
+                  // anything is sorted, filtered or inserted.
+                  h('th', { class: 'num' }, '#'),
+                  columns.map((field) =>
+                    sortHeader(field.label, sortKeyFor(field.key), {
+                      class: field.type === 'number' ? 'num' : '',
+                    }),
+                  ),
                   sortHeader('Updated', 'updatedAt'),
                 ),
               ),
               h(
                 'tbody',
                 null,
-                list.rows.map((record) =>
+                list.rows.map((record, i) =>
                   h(
                     'tr',
-                    { class: 'clickable', onclick: () => openRecord(record.id, record.register) },
-                    h('td', null, h('span', { class: 'cell-ref' }, record.ref ?? '—')),
-                    h(
-                      'td',
-                      null,
-                      h('span', { class: 'cell-title', title: record.title ?? '' }, record.title ?? '—'),
-                    ),
-                    h('td', null, priorityChip(record.priority)),
-                    h('td', null, record.status),
-                    h(
-                      'td',
-                      null,
-                      dueChip(record),
-                      record.dueDate && h('div', { class: 'hint' }, record.dueDate),
-                    ),
-                    h('td', null, record.actionBy ?? h('span', { class: 'muted' }, 'Unassigned')),
-                    h('td', { class: 'muted' }, record.initiator ?? '—'),
+                    { class: 'clickable', tabindex: '0', onclick: () => openRecord(record.id, record.register) },
+                    h('td', { class: 'num muted' }, (list.page - 1) * list.pageSize + i + 1),
+                    columns.map((field) => cell(register, record, field)),
                     h('td', { class: 'muted' }, fmtWhen(record.updatedAt)),
                   ),
                 ),
@@ -1224,18 +1393,29 @@ function renderImport() {
       const body = new FormData();
       body.append('file', file);
       const result = await api('/api/import/inspect', { method: 'POST', body });
+      // Choices made the last time this same file was uploaded win over the
+      // detector's guess: if someone corrected a mapping once, they should not
+      // have to correct it again every month.
+      const remembered = new Map(
+        (result.remembered ?? []).map((choice) => [choice.sheet, choice]),
+      );
+
       state.importState = {
         stage: 'confirm',
         filename: result.filename,
         token: result.token,
         sheets: result.sheets,
+        reused: remembered.size > 0,
         // Sheets the reader could not identify, or that hold no rows, start switched
         // off — importing an empty sheet is never what anyone meant to do.
-        choices: result.sheets.map((sheet) => ({
-          include: Boolean(sheet.suggestedRegister) && sheet.dataRows > 0,
-          register: sheet.suggestedRegister ?? '',
-          mode: 'replace',
-        })),
+        choices: result.sheets.map((sheet) => {
+          const previous = remembered.get(sheet.name);
+          return {
+            include: Boolean(previous?.register ?? sheet.suggestedRegister) && sheet.dataRows > 0,
+            register: previous?.register ?? sheet.suggestedRegister ?? '',
+            mode: previous?.mode ?? 'replace',
+          };
+        }),
       };
     } catch (error) {
       state.importState = { stage: 'error', message: error.message };
@@ -1258,6 +1438,7 @@ function renderImport() {
         json: { token: imp.token, selections },
       });
       state.importState = { stage: 'done', filename: imp.filename, results: result.results };
+      state.imports = null;
       loadDashboard();
     } catch (error) {
       state.importState = { ...imp, stage: 'confirm', error: error.message };
@@ -1310,6 +1491,7 @@ function renderImport() {
           ),
         ),
       ),
+      renderImportHistory(),
     );
   }
 
@@ -1404,6 +1586,12 @@ function renderImport() {
     'div',
     { class: 'content' },
     imp.error && h('div', { class: 'banner error' }, imp.error),
+    imp.reused &&
+      h(
+        'div',
+        { class: 'banner info' },
+        'Filled in from the last time this file was imported. Change anything that is different this month.',
+      ),
     h(
       'section',
       { class: 'card' },
@@ -1527,6 +1715,103 @@ function renderImport() {
           'span',
           { class: 'hint' },
           '“Replace” clears that register first — use it when the sheet is the master copy.',
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * The workbooks imported so far.
+ *
+ * Kept because "which file did these rows come from?" is a real question months
+ * later, and the answer should be the file itself rather than somebody's memory.
+ */
+function renderImportHistory() {
+  if (state.imports === null) {
+    api('/api/imports')
+      .then((data) => {
+        state.imports = data.imports;
+        render();
+      })
+      .catch(() => {
+        state.imports = [];
+      });
+    return null;
+  }
+
+  if (!state.imports.length) return null;
+
+  const kb = (bytes) => `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+  return h(
+    'section',
+    { class: 'card' },
+    h(
+      'header',
+      null,
+      h('h2', null, 'Previously imported'),
+      h('span', { class: 'hint' }, 'the last 20 uploads'),
+    ),
+    h(
+      'div',
+      { class: 'table-wrap', style: 'border: 0' },
+      h(
+        'table',
+        null,
+        h(
+          'thead',
+          null,
+          h(
+            'tr',
+            null,
+            h('th', null, 'File'),
+            h('th', null, 'Sheets imported'),
+            h('th', null, 'Uploaded by'),
+            h('th', null, 'When'),
+            h('th', { class: 'num' }, 'Rows'),
+            h('th', null, ''),
+          ),
+        ),
+        h(
+          'tbody',
+          null,
+          state.imports.map((entry) =>
+            h(
+              'tr',
+              null,
+              h('td', null, h('span', { class: 'cell-ref' }, entry.filename)),
+              h(
+                'td',
+                { class: 'muted' },
+                (entry.results ?? [])
+                  .filter((r) => r.registerName)
+                  .map((r) => r.registerName)
+                  .join(', ') || '—',
+              ),
+              h('td', null, entry.uploadedBy ?? '—'),
+              h('td', { class: 'muted' }, fmtWhen(entry.uploadedAt)),
+              h(
+                'td',
+                { class: 'num' },
+                (entry.results ?? []).reduce((sum, r) => sum + (r.imported ?? 0), 0),
+              ),
+              h(
+                'td',
+                null,
+                entry.contentStored === false
+                  ? h('span', { class: 'hint' }, 'not stored offline')
+                  : h(
+                      'button',
+                      {
+                        class: 'btn sm',
+                        onclick: () => download(`/api/imports/${entry.id}/file`),
+                      },
+                      `↓ ${kb(entry.sizeBytes)}`,
+                    ),
+              ),
+            ),
+          ),
         ),
       ),
     ),

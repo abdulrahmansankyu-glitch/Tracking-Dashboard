@@ -19,6 +19,7 @@ import {
   suggestRegister,
 } from '../src/excel.js';
 import {
+  REGISTERS,
   deriveRecord,
   dueState,
   getRegister,
@@ -63,6 +64,10 @@ test('toDateOnly reads the date formats the sheets actually contain', () => {
   assert.equal(toDateOnly('2026-07-20'), '2026-07-20');
   assert.equal(toDateOnly('20/07/2026'), '2026-07-20');
   assert.equal(toDateOnly('20-07-2026'), '2026-07-20');
+  // The PZV sheet's later rows use dots. Missing this hid eleven valves from the
+  // overdue counts, because an unparsed due date means "no date set".
+  assert.equal(toDateOnly('20.07.2026'), '2026-07-20');
+  assert.equal(toDateOnly('16.11.2021'), '2021-11-16');
   // Excel serial for 2026-07-20.
   assert.equal(toDateOnly(46223), '2026-07-20');
 });
@@ -304,6 +309,32 @@ test('search reaches into the register’s own columns, not just the derived one
 });
 
 // -------------------------------------------------------------- dashboard --
+
+test('each register reports the figures its dashboard card shows', () => {
+  const rows = [
+    record({ register: 'pzv', derived: { status: 'In Progress', dueDate: '2099-01-01' } }),
+    record({ register: 'pzv', derived: { status: 'Completed' } }),
+    record({ register: 'pzv', derived: { status: 'Cancelled' } }),
+  ];
+
+  const pzv = summarise(rows).byRegister.find((r) => r.id === 'pzv');
+  assert.equal(pzv.total, 3);
+  assert.equal(pzv.open, 1);
+  assert.equal(pzv.closed, 2, 'cancelled counts as closed, not as open work');
+  assert.equal(pzv.completed, 1);
+  // The ring is part-to-whole, so its four segments must add up to the total.
+  assert.equal(pzv.overdue + pzv.dueSoon + pzv.later + pzv.closed, pzv.total);
+});
+
+test('every register lists table columns that exist as fields', () => {
+  for (const register of REGISTERS) {
+    const keys = new Set(register.fields.map((f) => f.key));
+    assert.ok(register.tableColumns?.length, `${register.name} has no table columns`);
+    for (const key of register.tableColumns) {
+      assert.ok(keys.has(key), `${register.name} lists a column with no field: ${key}`);
+    }
+  }
+});
 
 test('summarise separates overdue, due-soon and undated open work', () => {
   const shift = (days) => {

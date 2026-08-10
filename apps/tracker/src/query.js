@@ -315,8 +315,13 @@ export function summarise(records) {
         short: register.short,
         total: rows.length,
         open: openRows.length,
+        closed: rows.length - openRows.length,
+        completed: rows.filter((r) => r.status === 'Completed').length,
         overdue: openRows.filter((r) => state(r) === 'overdue').length,
         dueSoon: openRows.filter((r) => state(r) === 'due-soon').length,
+        // Open, not late, and not due inside the window — the work that is simply
+        // scheduled. Named so the four segments of the ring add up to the total.
+        later: openRows.filter((r) => !['overdue', 'due-soon'].includes(state(r))).length,
       };
     }),
     byPriority: PRIORITY_VALUES.map((priority) => {

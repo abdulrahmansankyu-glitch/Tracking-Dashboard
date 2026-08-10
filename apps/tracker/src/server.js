@@ -21,6 +21,7 @@ import multer from 'multer';
 import { buildWorkbook, inspectWorkbook, readSheet } from './excel.js';
 import { sanitiseData, summarise } from './query.js';
 import {
+  AREA_OPTIONS,
   DUE_SOON_DAYS,
   PRIORITY_VALUES,
   REGISTERS,
@@ -100,6 +101,7 @@ export async function createApp(env = process.env) {
       dueSoonDays: DUE_SOON_DAYS,
       priorities: PRIORITY_VALUES,
       statuses: STATUSES,
+      areas: AREA_OPTIONS,
       registers: registerCatalogue(),
     });
   });
@@ -290,7 +292,12 @@ export async function createApp(env = process.env) {
       const inspection = await inspectWorkbook(req.file.buffer);
       const token = stashUpload(req.file.originalname, req.file.buffer);
 
-      res.json({ token, filename: req.file.originalname, ...inspection });
+      // Last month's choices for a file of this name, so a recurring upload does
+      // not mean re-picking every sheet. Only a suggestion — the confirm step still
+      // shows what will happen and the user can change any of it.
+      const remembered = await store.findMapping(req.file.originalname);
+
+      res.json({ token, filename: req.file.originalname, remembered, ...inspection });
     } catch (error) {
       if (error?.message?.match(/zip|corrupt|end of central directory/i)) {
         return asError(res, 400, 'That file could not be read as an Excel workbook (.xlsx).');
@@ -368,7 +375,51 @@ export async function createApp(env = process.env) {
         });
       }
 
+      // The uploaded workbook is kept so anyone can download exactly what was
+      // imported — the record the team asked for — along with the choices made,
+      // which is what makes the next upload of the same file one click.
+      try {
+        await store.saveImport({
+          id: randomUUID(),
+          filename: pending.filename,
+          uploadedAt: new Date().toISOString(),
+          uploadedBy: actor,
+          sizeBytes: pending.buffer.length,
+          sheetNames: selections.map((sel) => sel.sheet),
+          mapping: selections,
+          results,
+          content: pending.buffer,
+        });
+      } catch (error) {
+        // A failure to archive the file must not undo an import that succeeded.
+        console.error('[tracker] could not store the uploaded file:', error);
+      }
+
       res.json({ results });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/imports', requireAccess, async (_req, res, next) => {
+    try {
+      res.json({ imports: await store.listImports() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/imports/:id/file', requireAccess, async (req, res, next) => {
+    try {
+      const file = await store.getImportFile(req.params.id);
+      if (!file) return asError(res, 404, 'That file is no longer stored.');
+
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
+      res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+      res.send(Buffer.from(file.content));
     } catch (error) {
       next(error);
     }

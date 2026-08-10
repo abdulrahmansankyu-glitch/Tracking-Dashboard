@@ -563,6 +563,114 @@ label.field > span {
   text-align: right;
 }
 
+/* --------------------------------------------------- register overview --- */
+
+.register-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+  gap: 12px;
+}
+
+.register-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 15px 12px;
+  border: 1px solid var(--grid);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  text-align: center;
+  font: inherit;
+  color: inherit;
+}
+
+.register-card:hover {
+  border-color: var(--ink-muted);
+}
+
+.register-card h3 {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.donut-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.donut {
+  line-height: 0;
+}
+
+.donut-centre {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+
+.donut-centre strong {
+  font-size: 19px;
+  font-weight: 680;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.donut-centre span {
+  font-size: 9.5px;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.register-figures {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px 12px;
+  margin: 0;
+  width: 100%;
+}
+
+.figure {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.figure dt {
+  color: var(--ink-2);
+}
+
+.figure dd {
+  margin: 0;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.figure.is-critical dd {
+  color: var(--critical);
+}
+
+.figure.is-warning dd {
+  color: #8a5a06;
+}
+
+:root[data-theme='dark'] .figure.is-warning dd {
+  color: var(--warning);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) .figure.is-warning dd {
+    color: var(--warning);
+  }
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;

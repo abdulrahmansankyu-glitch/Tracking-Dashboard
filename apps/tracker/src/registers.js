@@ -131,6 +131,13 @@ const text = (key, label, aliases = []) => ({ key, label, type: 'text', aliases 
 const longtext = (key, label, aliases = []) => ({ key, label, type: 'longtext', aliases });
 const date = (key, label, aliases = []) => ({ key, label, type: 'date', aliases });
 const number = (key, label, aliases = []) => ({ key, label, type: 'number', aliases });
+/**
+ * The two plants this team covers. Area is a choice rather than free text so the
+ * dashboard can group by it — typing "SHP " once and "SHP" the next time would
+ * otherwise split one plant into two.
+ */
+export const AREA_OPTIONS = ['SHP', 'DCU'];
+
 const select = (key, label, options, aliases = []) => ({
   key,
   label,
@@ -148,6 +155,12 @@ export const REGISTERS = [
     // Both uploaded workbooks title this sheet "Sheet1", so name-matching alone
     // cannot identify it. Header matching (below) is what actually resolves it.
     sheetAliases: ['action notice', 'action notice tracking', 'an', 'sheet1'],
+    // The columns this register shows in its table — the same ones, in the same
+    // order, as the team's own sheet. A shared generic layout (Ref / Description /
+    // Priority) reads as a stranger's spreadsheet: it hides the Unit and Discipline
+    // an engineer scans for, and shows a "Ref" column that half the registers leave
+    // empty. Anything not listed here is still stored and still editable.
+    tableColumns: ['documentNo', 'issuedDate', 'description', 'location', 'initiator', 'etc', 'actionBy', 'status'],
     fields: [
       text('documentNo', 'Document No.', ['document no', 'doc no', 'documentnumber']),
       date('issuedDate', 'Date', ['date', 'date issued', 'raised on']),
@@ -181,10 +194,11 @@ export const REGISTERS = [
     short: 'IWS',
     description: 'Inspection work scopes raised against plant units.',
     sheetAliases: ['iws', 'iws track', 'iws tracking'],
+    tableColumns: ['iwsNumber', 'area', 'unit', 'discipline', 'description', 'issuedDate', 'targetDate', 'progress', 'status'],
     fields: [
       text('iwsNumber', 'IWS Number', ['iws number', 'iws no', 'iwsnumber']),
       select('priority', 'Priority', PRIORITY_VALUES, ['priority']),
-      text('area', 'Area', ['area']),
+      select('area', 'Area', AREA_OPTIONS, ['area']),
       text('unit', 'Unit', ['unit']),
       text('discipline', 'Discipline', ['discipline', 'trade']),
       longtext('description', 'Description', ['description', 'scope']),
@@ -225,16 +239,18 @@ export const REGISTERS = [
     short: 'PZV',
     description: 'Pressure safety valve calibration and overhaul schedule.',
     sheetAliases: ['pzv', 'pzv tracking', 'pzv tracking sheet', 'psv'],
+    tableColumns: ['plantSection', 'sortField', 'description', 'lastCalibration', 'dueDate'],
     fields: [
-      text('area', 'Area', ['area']),
-      text('plantSection', 'Plant Section', ['plant section', 'section', 'unit']),
+      select('area', 'Area', AREA_OPTIONS, ['area']),
+      text('plantSection', 'Unit', ['unit', 'plant section', 'section']),
       longtext('description', 'Description', ['description']),
-      text('sortField', 'Sort Field', ['sort field', 'tag', 'valve tag']),
+      text('sortField', 'Tag Number', ['tag number', 'sort field', 'tag', 'valve tag']),
       longtext('maintenanceItem', 'Maintenance Item Text', [
         'maintenance item text',
         'maintenance item',
       ]),
-      date('lastCalibration', 'Last Calibration Date', [
+      date('lastCalibration', 'Last Inspection', [
+        'last inspection',
         'last calibration date',
         'last calibration',
       ]),
@@ -268,8 +284,9 @@ export const REGISTERS = [
     short: 'EIS',
     description: 'Equipment inspection strategy — vessels and tanks.',
     sheetAliases: ['eis', 'eis tracking', 'eis tracking sheet'],
+    tableColumns: ['area', 'equipmentNumber', 'description', 'lastInspection', 'nextInspection'],
     fields: [
-      text('area', 'Area', ['area']),
+      select('area', 'Area', AREA_OPTIONS, ['area']),
       text('equipmentNumber', 'Equipment Number', ['equipment number', 'equipment no', 'tag']),
       longtext('description', 'Description', ['description']),
       text('equipmentType', 'Equipment Type', ['equipment type', 'type']),
@@ -304,8 +321,9 @@ export const REGISTERS = [
     short: 'RI',
     description: 'Recurring inspection routines by interval and discipline.',
     sheetAliases: ['routine inspection', 'inspection routine', 'routine'],
+    tableColumns: ['discipline', 'interval', 'activity', 'area', 'equipments', 'duration', 'actionBy', 'inspectionDate', 'nextInspection'],
     fields: [
-      text('area', 'Area', ['area']),
+      select('area', 'Area', AREA_OPTIONS, ['area']),
       text('discipline', 'Discipline', ['discipline', 'trade']),
       text('interval', 'Interval', ['interval', 'frequency']),
       longtext('activity', 'Inspection Activity', ['inspection activity', 'activity']),
@@ -343,6 +361,7 @@ export const REGISTERS = [
     short: 'CTS',
     description: 'Recommendations arising from CTS investigation reports.',
     sheetAliases: ['cts recommendation', 'cts recommendations', 'cts'],
+    tableColumns: ['recommendation', 'actionBy', 'priority', 'status', 'etc', 'category', 'equipment'],
     fields: [
       longtext('recommendation', 'Recommendation', ['recommendation']),
       longtext('basis', 'Basis', ['basis', 'rationale']),
@@ -376,6 +395,7 @@ export const REGISTERS = [
     short: 'PDM',
     description: 'Predictive maintenance findings — vibration and oil analysis.',
     sheetAliases: ['pdm', 'predictive maintenance', 'pdm tracking'],
+    tableColumns: ['equipmentTag', 'reportDate', 'severity', 'recommendation', 'progress', 'maintenanceAction', 'status'],
     fields: [
       text('technique', 'Technique', ['technique', 'method']),
       text('equipmentTag', 'Equipment Tag', ['equipment tag', 'tag', 'equipment']),
@@ -386,7 +406,7 @@ export const REGISTERS = [
       longtext('recommendation', 'Recommendation', ['recommendation']),
       text('progress', 'Progress', ['progress']),
       longtext('maintenanceAction', 'Maintenance Action', ['maintenance action', 'action']),
-      select('status', 'Case Status', STATUSES, ['case status', 'status']),
+      select('status', 'Case Status', STATUSES, ['case status', 'stats', 'status']),
       text('actionBy', 'Action By', ['action by', 'responsible', 'owner']),
       date('targetDate', 'Target Date', ['target date', 'due date', 'etc']),
       longtext('remarks', 'Remarks', ['remarks', 'notes']),
@@ -445,8 +465,10 @@ export function toDateOnly(value) {
   const raw = String(value).trim();
   if (!raw) return null;
 
-  // dd/mm/yyyy and dd-mm-yyyy, which Excel exports as text more often than not.
-  const dmy = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  // dd/mm/yyyy, dd-mm-yyyy and dd.mm.yyyy, which Excel exports as text more often
+  // than not. The dotted form is what the PZV sheet's later rows use, and without
+  // it eleven valves parsed as "no date" and vanished from the overdue counts.
+  const dmy = raw.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
   if (dmy) {
     const [, d, m, y] = dmy;
     return withinRange(new Date(Date.UTC(Number(y), Number(m) - 1, Number(d))));
@@ -555,6 +577,7 @@ export function registerCatalogue() {
     short: r.short,
     description: r.description,
     fields: r.fields,
+    tableColumns: r.tableColumns,
     roles: r.roles,
   }));
 }

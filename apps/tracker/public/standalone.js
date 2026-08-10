@@ -20,14 +20,15 @@ const STORAGE_KEY = 'tracker.standalone.v1';
 function load() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { records: [], activity: [] };
+    if (!raw) return { records: [], activity: [], imports: [] };
     const parsed = JSON.parse(raw);
     return {
       records: Array.isArray(parsed.records) ? parsed.records : [],
       activity: Array.isArray(parsed.activity) ? parsed.activity : [],
+      imports: Array.isArray(parsed.imports) ? parsed.imports : [],
     };
   } catch {
-    return { records: [], activity: [] };
+    return { records: [], activity: [], imports: [] };
   }
 }
 
@@ -95,6 +96,7 @@ globalThis.__trackerLocalApi = async function localApi(path, options = {}) {
         dueSoonDays: DUE_SOON_DAYS,
         priorities: PRIORITY_VALUES,
         statuses: STATUSES,
+        areas: AREA_OPTIONS,
         registers: registerCatalogue(),
       });
     }
@@ -248,7 +250,9 @@ globalThis.__trackerLocalApi = async function localApi(path, options = {}) {
 
       const token = crypto.randomUUID();
       pendingUploads.set(token, { filename: file.name, buffer });
-      return json({ token, filename: file.name, ...inspection });
+
+      const remembered = state.imports.find((i) => i.filename === file.name)?.mapping ?? null;
+      return json({ token, filename: file.name, remembered, ...inspection });
     }
 
     if (pathname === '/api/import/commit') {
@@ -314,9 +318,28 @@ globalThis.__trackerLocalApi = async function localApi(path, options = {}) {
         });
       }
 
+      // The choices are kept so the next upload of this file is one click. The
+      // workbook itself is not: browser storage is a few megabytes in total, and
+      // spending it on file bytes would start failing the record saves that
+      // matter more. The hosted deployment does keep the files.
+      state.imports.unshift({
+        id: crypto.randomUUID(),
+        filename: pending.filename,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: actor,
+        sizeBytes: pending.buffer.byteLength,
+        sheetNames: selections.map((sel) => sel.sheet),
+        mapping: selections,
+        results,
+        contentStored: false,
+      });
+      state.imports = state.imports.slice(0, 20);
+
       persist();
       return json({ results });
     }
+
+    if (pathname === '/api/imports') return json({ imports: state.imports });
 
     if (pathname === '/api/export') {
       const requested = params.get('register');

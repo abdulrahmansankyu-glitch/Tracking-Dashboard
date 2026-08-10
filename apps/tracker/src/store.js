@@ -87,7 +87,45 @@ CREATE TABLE IF NOT EXISTS tracker.activity (
 );
 
 CREATE INDEX IF NOT EXISTS activity_at_idx ON tracker.activity (at DESC);
+
+CREATE TABLE IF NOT EXISTS tracker.imports (
+  id          text PRIMARY KEY,
+  filename    text NOT NULL,
+  uploaded_at timestamptz NOT NULL DEFAULT now(),
+  uploaded_by text,
+  size_bytes  integer,
+  sheet_names jsonb,
+  mapping     jsonb,
+  results     jsonb,
+  content     bytea
+);
+
+CREATE INDEX IF NOT EXISTS imports_at_idx ON tracker.imports (uploaded_at DESC);
 `;
+
+/**
+ * How many uploaded workbooks to keep.
+ *
+ * The files are kept so anyone can download exactly what was imported, which is
+ * the record the team asked for. They are also the only unbounded thing in this
+ * database, and a free Postgres plan is half a gigabyte — so the oldest are
+ * dropped rather than letting a year of monthly uploads quietly fill it.
+ */
+const MAX_STORED_IMPORTS = 20;
+
+/** An import row as the API serves it — never including the file bytes. */
+function toImportApi(row) {
+  return {
+    id: row.id,
+    filename: row.filename,
+    uploadedAt: asIsoString(row.uploaded_at ?? row.uploadedAt),
+    uploadedBy: row.uploaded_by ?? row.uploadedBy ?? null,
+    sizeBytes: row.size_bytes ?? row.sizeBytes ?? 0,
+    sheetNames: row.sheet_names ?? row.sheetNames ?? [],
+    mapping: row.mapping ?? [],
+    results: row.results ?? [],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Postgres backend
@@ -196,6 +234,56 @@ class PostgresStore {
     );
   }
 
+  async saveImport(entry) {
+    await this.pool.query(
+      `INSERT INTO tracker.imports
+         (id, filename, uploaded_at, uploaded_by, size_bytes, sheet_names, mapping, results, content)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        entry.id,
+        entry.filename,
+        entry.uploadedAt,
+        entry.uploadedBy,
+        entry.sizeBytes,
+        JSON.stringify(entry.sheetNames ?? []),
+        JSON.stringify(entry.mapping ?? []),
+        JSON.stringify(entry.results ?? []),
+        entry.content,
+      ],
+    );
+    await this.pool.query(
+      `DELETE FROM tracker.imports WHERE id NOT IN (
+         SELECT id FROM tracker.imports ORDER BY uploaded_at DESC LIMIT $1
+       )`,
+      [MAX_STORED_IMPORTS],
+    );
+  }
+
+  async listImports(limit = MAX_STORED_IMPORTS) {
+    const { rows } = await this.pool.query(
+      `SELECT id, filename, uploaded_at, uploaded_by, size_bytes, sheet_names, mapping, results
+         FROM tracker.imports ORDER BY uploaded_at DESC LIMIT $1`,
+      [limit],
+    );
+    return rows.map(toImportApi);
+  }
+
+  async getImportFile(id) {
+    const { rows } = await this.pool.query(
+      'SELECT filename, content FROM tracker.imports WHERE id = $1',
+      [id],
+    );
+    return rows.length ? { filename: rows[0].filename, content: rows[0].content } : null;
+  }
+
+  async findMapping(filename) {
+    const { rows } = await this.pool.query(
+      `SELECT mapping FROM tracker.imports WHERE filename = $1 ORDER BY uploaded_at DESC LIMIT 1`,
+      [filename],
+    );
+    return rows.length ? (rows[0].mapping ?? null) : null;
+  }
+
   async recentActivity(limit = 50) {
     const { rows } = await this.pool.query(
       'SELECT * FROM tracker.activity ORDER BY at DESC LIMIT $1',
@@ -222,7 +310,7 @@ class FileStore {
   constructor(file) {
     this.file = file;
     this.kind = 'file';
-    this.state = { records: [], activity: [] };
+    this.state = { records: [], activity: [], imports: [] };
     // Writes are serialised through this promise chain. Two imports landing at once
     // would otherwise each read, then each write, and the second would erase the first.
     this.writeQueue = Promise.resolve();
@@ -236,6 +324,7 @@ class FileStore {
       this.state = {
         records: Array.isArray(parsed.records) ? parsed.records : [],
         activity: Array.isArray(parsed.activity) ? parsed.activity : [],
+        imports: Array.isArray(parsed.imports) ? parsed.imports : [],
       };
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
@@ -307,6 +396,27 @@ class FileStore {
     // Bounded: the activity feed is a recent-changes list, not an audit archive.
     this.state.activity = this.state.activity.slice(0, 500);
     await this.#persist();
+  }
+
+  async saveImport(entry) {
+    // Base64 keeps the JSON store a text file that survives a round trip through
+    // JSON.parse; the Postgres path keeps the bytes as bytea.
+    this.state.imports.unshift({ ...entry, content: entry.content.toString('base64') });
+    this.state.imports = this.state.imports.slice(0, MAX_STORED_IMPORTS);
+    await this.#persist();
+  }
+
+  async listImports(limit = MAX_STORED_IMPORTS) {
+    return this.state.imports.slice(0, limit).map(({ content, ...rest }) => toImportApi(rest));
+  }
+
+  async getImportFile(id) {
+    const found = this.state.imports.find((i) => i.id === id);
+    return found ? { filename: found.filename, content: Buffer.from(found.content, 'base64') } : null;
+  }
+
+  async findMapping(filename) {
+    return this.state.imports.find((i) => i.filename === filename)?.mapping ?? null;
   }
 
   async recentActivity(limit = 50) {
