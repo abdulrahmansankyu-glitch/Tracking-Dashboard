@@ -1042,6 +1042,22 @@ th.num {
   color: var(--accent-ink);
 }
 
+.banner.warn {
+  background: var(--warning-wash);
+  border-color: var(--warning);
+  color: #8a5a06;
+}
+
+:root[data-theme='dark'] .banner.warn {
+  color: var(--warning);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) .banner.warn {
+    color: var(--warning);
+  }
+}
+
 .banner.ok {
   background: var(--good-wash);
   border-color: var(--good);

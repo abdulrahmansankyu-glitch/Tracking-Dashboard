@@ -19,6 +19,7 @@ import {
   detectHeader,
   extractRows,
   inspectWorkbook,
+  readSheet,
   suggestRegister,
 } from '../src/excel.js';
 import {
@@ -421,6 +422,46 @@ test('a multi-register export carries a Summary sheet plus one sheet per registe
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
   assert.deepEqual(workbook.worksheets.map((w) => w.name), ['Summary', 'IWS', 'PZV']);
+});
+
+test('a sheet with no due-date column is flagged, not silently undated', async () => {
+  // A DCU master sheet arrived without a Target Date column beside an SHP one that
+  // had it. All 17 rows imported "successfully" and none could ever be overdue.
+  const headers = ['Ser.', 'IWS Number', 'Area', 'Unit ', 'Discipline', 'Description', 'Date Issued', 'Status'];
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('DCU-Master Tracking Sheet');
+  sheet.getRow(1).values = ['DCU-Master Tracking Sheet'];
+  sheet.getRow(2).values = headers;
+  sheet.getRow(3).values = [1, 'IWS-DCU-1', 'DCU', '113', 'Mechanical', 'Job 1', '2026-01-01', 'In Progress'];
+
+  const { sheets } = await inspectWorkbook(await workbook.xlsx.writeBuffer());
+  const [only] = sheets;
+
+  assert.equal(only.suggestedRegister, 'iws');
+  assert.deepEqual(
+    only.missingKeyColumns.map((c) => c.label),
+    ['Target Date'],
+    'the import screen must be able to warn before the rows land',
+  );
+});
+
+test('the spelling the team actually uses for Target Date is recognised', async () => {
+  // Their own IWS sheets and change notes write it "Targate Date".
+  const headers = ['Ser.', 'IWS Number', 'Area', 'Unit ', 'Discipline', 'Description', 'Date Issued', 'Targate Date'];
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('IWS');
+  sheet.getRow(1).values = ['IWS Track'];
+  sheet.getRow(2).values = headers;
+  sheet.getRow(3).values = [1, 'IWS-1', 'SHP', '178', 'Civil', 'Job', '2026-01-01', '2027-06-30'];
+
+  const { sheets } = await inspectWorkbook(await workbook.xlsx.writeBuffer());
+  assert.ok(
+    !sheets[0].missingKeyColumns.some((c) => c.role === 'due'),
+    'the misspelling must resolve to the due-date column',
+  );
+
+  const { register, rows } = await readSheet(await workbook.xlsx.writeBuffer(), 'IWS', 'iws');
+  assert.equal(deriveRecord(register, rows[0]).dueDate, '2027-06-30');
 });
 
 // --------------------------------------------------------- import commit ---

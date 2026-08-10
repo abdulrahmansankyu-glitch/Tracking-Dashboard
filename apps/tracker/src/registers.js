@@ -203,7 +203,16 @@ export const REGISTERS = [
       text('discipline', 'Discipline', ['discipline', 'trade']),
       longtext('description', 'Description', ['description', 'scope']),
       date('issuedDate', 'Date Issued', ['date issued', 'issued date', 'date']),
-      date('targetDate', 'Target Date', ['target date', 'due date', 'target']),
+      date('targetDate', 'Target Date', [
+        'target date',
+        // "Targate Date" is how the team's own IWS sheets and change notes spell
+        // it; a sheet using that spelling silently imported with no due dates.
+        'targate date',
+        'traget date',
+        'targert date',
+        'due date',
+        'target',
+      ]),
       text('counter', 'Counter', ['counter']),
       text('notificationNo', 'Notification No.', ['notification no', 'notification']),
       text('woNo', 'WO. No.', ['wo no', 'work order', 'wo number', 'wo']),

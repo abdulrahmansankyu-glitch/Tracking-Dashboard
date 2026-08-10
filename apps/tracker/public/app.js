@@ -1569,6 +1569,20 @@ function renderImport() {
                 { class: 'hint' },
                 `Kept as extra columns: ${sheet.unmappedColumns.join(', ')}`,
               ),
+
+            // Said before importing, not discovered afterwards in a row count.
+            sheet.missingKeyColumns?.length > 0 &&
+              h(
+                'div',
+                { class: 'banner warn', style: 'margin-top: 4px' },
+                sheet.missingKeyColumns
+                  .map(({ role, label }) =>
+                    role === 'due'
+                      ? `No "${label}" column found in this sheet — all ${sheet.dataRows} rows will import with no due date, and will not appear in Overdue or Due in ${state.config.dueSoonDays} days. Check the heading spelling in Excel, or set the dates in the app afterwards.`
+                      : `No "${label}" column found in this sheet.`,
+                  )
+                  .join(' '),
+              ),
           );
         }),
       ),

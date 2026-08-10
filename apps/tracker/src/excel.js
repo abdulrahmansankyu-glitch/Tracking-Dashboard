@@ -205,6 +205,23 @@ export async function inspectWorkbook(buffer) {
     const { register, header } = suggestion;
     const extracted = extractRows(worksheet, register, header);
 
+    // Columns that carry a cross-cutting role and were not found in this sheet.
+    //
+    // A missing due-date column is the dangerous one: the rows import cleanly, the
+    // counts look right, and every one of them is quietly invisible to Overdue and
+    // Due-in-30-days for ever. That happened to a DCU master sheet whose target
+    // date column was spelled differently from the SHP one beside it, and nothing
+    // in the import summary said so.
+    const mapped = new Set([...header.columnMap.values()].map((c) => c.field));
+    const missingKeyColumns = ['due', 'ref', 'status']
+      .map((role) => ({ role, key: register.roles[role] }))
+      .filter(({ key }) => key && !mapped.has(key))
+      .map(({ role, key }) => ({
+        role,
+        key,
+        label: register.fields.find((f) => f.key === key)?.label ?? key,
+      }));
+
     sheets.push({
       name: worksheet.name,
       rowCount: worksheet.rowCount ?? 0,
@@ -215,6 +232,7 @@ export async function inspectWorkbook(buffer) {
       headers: [...header.columnMap.values()].map((c) => c.label),
       mappedColumns: [...header.columnMap.values()].map((c) => ({ label: c.label, field: c.field })),
       unmappedColumns: header.unmapped.map((c) => c.label),
+      missingKeyColumns,
       dataRows: extracted.rows.length,
       skippedRows: extracted.skipped,
       sample: extracted.rows.slice(0, 3),
