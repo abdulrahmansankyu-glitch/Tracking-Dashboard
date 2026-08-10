@@ -986,6 +986,22 @@ th.num {
   font-weight: 600;
 }
 
+.register-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  max-width: 460px;
+}
+
+.register-picker .switch {
+  font-size: 12px;
+}
+
+.btn.sm.danger {
+  color: var(--critical);
+  border-color: var(--critical);
+}
+
 .dropzone {
   border: 1.5px dashed var(--line);
   border-radius: var(--radius);

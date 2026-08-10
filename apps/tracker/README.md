@@ -35,10 +35,10 @@ to that file and nothing else.
 
 ## The dashboard
 
-- **Open · Overdue · Due in 30 days · No due date · Completed** across everything.
-- **When work is due** — overdue, within 7 days, 8–14, 15–30, beyond 30, undated.
-- **Open jobs by priority**, on one ladder shared by all seven registers.
-- **Workload by action owner** — who is carrying what, most overdue first.
+- **Total Jobs · Open · Closed · Due in 30 days · Completed · Overdue** across
+  every register the reader may open.
+- **A ring per register** — overdue, due within 30 days, open, closed — summing to
+  that register's total, with all four printed beside it.
 - **Needs attention** — everything overdue or due inside a month, soonest first.
 - **Recent changes** — who changed what, and when.
 
@@ -104,11 +104,13 @@ it uses that instead; the tables are created on boot.
 | `PORT` | `4100` | Port to listen on |
 | `DATABASE_URL` | — | Postgres connection string. Unset → local JSON file |
 | `DATABASE_SSL` | — | `no-verify` for managed Postgres (Neon, Supabase, Render external); `disable` to force plain TCP |
-| `TRACKER_ACCESS_CODE` | — | Shared team code. Unset → anyone with the link can edit |
+| `TRACKER_ACCESS_CODE` | — | Authorises creating the first admin account, and gates the app until one exists |
+| `TRACKER_SESSION_SECRET` | generated | Signs session tokens. Generated once and stored if unset |
+| `TRACKER_ADMIN_EMAIL` · `TRACKER_ADMIN_PASSWORD` · `TRACKER_ADMIN_NAME` | — | Create the first admin on boot instead of through the setup screen |
 | `TRACKER_DATA_FILE` | `data/tracker.json` | Where the JSON store lives |
 
 ```bash
-pnpm --filter @intoto/tracker test     # 21 tests, no database needed
+pnpm --filter @intoto/tracker test     # 36 tests, no database needed
 ```
 
 ---
@@ -130,21 +132,43 @@ move to a paid database or to Neon's free tier, which persists.
 
 ---
 
-## Who can see it
+## Accounts and permissions
 
-Access is a **shared team code**, not per-person accounts. The team already emails
-these workbooks around; making everyone maintain a password to reach a tracker they
-can already read would add administration without adding privacy.
+Everyone signs in with their own email and password. Passwords are hashed with
+scrypt, so the database holds no readable password even if it leaks, and sessions
+are signed tokens that survive the free tier's frequent restarts.
 
-Each person types their name once. It is recorded against everything they add or
-change and shown in *Recent changes*, which is the accountability the `Action By`
-and `Initiator` columns are asking for.
+**Setting it up.** The first person to open a fresh deployment is asked to create
+the administrator account, and must supply `TRACKER_ACCESS_CODE` to do it — so
+somebody who merely finds the URL first cannot claim it. Alternatively, set
+`TRACKER_ADMIN_EMAIL` and `TRACKER_ADMIN_PASSWORD` and the account is created on
+first boot.
 
-If you need real per-person accounts — someone who may read but not edit, or an
-audit trail that a person cannot type their way around — that needs actual user
-records, and this is the point to add them rather than to stretch the shared code.
+**Three roles**, set per person under **Settings**:
 
----
+| Role | Can |
+|---|---|
+| Viewer | Read every permitted register and export to Excel. Nothing else. |
+| Editor | Add, edit, delete and import. |
+| Admin | Everything, plus managing accounts and permissions. |
+
+**Plus a register list.** Independently of the role, an account can be limited to
+particular registers — an editor restricted to IWS cannot open PDM, cannot import
+into it, and does not see it on the dashboard or in an export. The two are
+separate because they answer different questions: the role is *what kind of thing*
+someone may do, the register list is *where*. Folding them together would mean
+inventing a role per combination.
+
+Restrictions are enforced on the server, not by hiding buttons. Hidden buttons are
+for clarity; the API refuses the request either way, and the tests check the
+refusals rather than the hiding.
+
+An admin cannot demote or switch off the last remaining admin — it is the one
+change that could not be undone from inside the app.
+
+The offline single-file build has no accounts at all. The file *is* the
+permission: whoever can open it can already read and change everything in it, so
+a login there would be theatre. It asks for a name, for the audit trail.
 
 ## How it is built
 
@@ -157,7 +181,8 @@ src/excel.js       reading real workbooks; writing ones that read back in
 src/store.js       Postgres or a JSON file, behind one interface
 src/server.js      the API and the static app, one process
 public/            the browser app — app.js, styles.css, index.html
-test/              21 tests over the parts that would fail silently
+src/auth.js        passwords, sessions, roles and register permissions
+test/              36 tests over the parts that would fail silently
 ```
 
 The browser never carries its own copy of the register definitions — it reads them

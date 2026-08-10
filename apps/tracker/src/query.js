@@ -120,6 +120,9 @@ const PRIORITY_RANK = { Critical: 1, High: 2, Medium: 3, Low: 4, Planned: 5 };
 
 function matches(record, q) {
   if (q.register && record.register !== q.register) return false;
+  // An account limited to certain registers never sees rows from the others,
+  // whether or not it asked for a specific one.
+  if (q.registers?.length && !q.registers.includes(record.register)) return false;
 
   if (q.search) {
     const needle = q.search.toLowerCase();
@@ -214,6 +217,7 @@ function comparePrimary(a, b, sort, direction) {
 export function applyQuery(records, query = {}) {
   const q = {
     register: query.register || null,
+    registers: asArray(query.registers),
     search: query.search ? String(query.search).trim().toLowerCase() : '',
     priority: asArray(query.priority),
     status: asArray(query.status),

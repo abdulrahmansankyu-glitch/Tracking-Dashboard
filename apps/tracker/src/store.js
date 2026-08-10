@@ -101,6 +101,25 @@ CREATE TABLE IF NOT EXISTS tracker.imports (
 );
 
 CREATE INDEX IF NOT EXISTS imports_at_idx ON tracker.imports (uploaded_at DESC);
+
+CREATE TABLE IF NOT EXISTS tracker.users (
+  id            text PRIMARY KEY,
+  name          text NOT NULL,
+  email         text NOT NULL UNIQUE,
+  password_hash text NOT NULL,
+  role          text NOT NULL DEFAULT 'viewer',
+  registers     jsonb NOT NULL DEFAULT '[]'::jsonb,
+  active        boolean NOT NULL DEFAULT true,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  last_login_at timestamptz
+);
+
+-- Key/value for things the server must remember across restarts, currently the
+-- session-signing secret: generated once so a redeploy does not sign everyone out.
+CREATE TABLE IF NOT EXISTS tracker.settings (
+  key   text PRIMARY KEY,
+  value text NOT NULL
+);
 `;
 
 /**
@@ -284,6 +303,64 @@ class PostgresStore {
     return rows.length ? (rows[0].mapping ?? null) : null;
   }
 
+  async listUsers() {
+    const { rows } = await this.pool.query('SELECT * FROM tracker.users ORDER BY created_at');
+    return rows;
+  }
+
+  async countUsers() {
+    const { rows } = await this.pool.query('SELECT count(*)::int AS n FROM tracker.users');
+    return rows[0].n;
+  }
+
+  async findUserByEmail(email) {
+    const { rows } = await this.pool.query('SELECT * FROM tracker.users WHERE email = $1', [email]);
+    return rows[0] ?? null;
+  }
+
+  async findUserById(id) {
+    const { rows } = await this.pool.query('SELECT * FROM tracker.users WHERE id = $1', [id]);
+    return rows[0] ?? null;
+  }
+
+  async insertUser(user) {
+    await this.pool.query(
+      `INSERT INTO tracker.users (id, name, email, password_hash, role, registers, active, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [user.id, user.name, user.email, user.password_hash, user.role, JSON.stringify(user.registers ?? []), user.active, user.created_at],
+    );
+    return user;
+  }
+
+  async updateUser(id, patch) {
+    const columns = Object.keys(patch);
+    if (!columns.length) return this.findUserById(id);
+    const assignments = columns.map((col, i) => `${col} = $${i + 2}`);
+    const values = columns.map((col) =>
+      col === 'registers' ? JSON.stringify(patch[col] ?? []) : patch[col],
+    );
+    await this.pool.query(`UPDATE tracker.users SET ${assignments.join(', ')} WHERE id = $1`, [id, ...values]);
+    return this.findUserById(id);
+  }
+
+  async deleteUser(id) {
+    const { rowCount } = await this.pool.query('DELETE FROM tracker.users WHERE id = $1', [id]);
+    return rowCount > 0;
+  }
+
+  async getSetting(key) {
+    const { rows } = await this.pool.query('SELECT value FROM tracker.settings WHERE key = $1', [key]);
+    return rows[0]?.value ?? null;
+  }
+
+  async setSetting(key, value) {
+    await this.pool.query(
+      `INSERT INTO tracker.settings (key, value) VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [key, value],
+    );
+  }
+
   async recentActivity(limit = 50) {
     const { rows } = await this.pool.query(
       'SELECT * FROM tracker.activity ORDER BY at DESC LIMIT $1',
@@ -310,7 +387,7 @@ class FileStore {
   constructor(file) {
     this.file = file;
     this.kind = 'file';
-    this.state = { records: [], activity: [], imports: [] };
+    this.state = { records: [], activity: [], imports: [], users: [], settings: {} };
     // Writes are serialised through this promise chain. Two imports landing at once
     // would otherwise each read, then each write, and the second would erase the first.
     this.writeQueue = Promise.resolve();
@@ -325,6 +402,8 @@ class FileStore {
         records: Array.isArray(parsed.records) ? parsed.records : [],
         activity: Array.isArray(parsed.activity) ? parsed.activity : [],
         imports: Array.isArray(parsed.imports) ? parsed.imports : [],
+        users: Array.isArray(parsed.users) ? parsed.users : [],
+        settings: parsed.settings ?? {},
       };
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
@@ -417,6 +496,52 @@ class FileStore {
 
   async findMapping(filename) {
     return this.state.imports.find((i) => i.filename === filename)?.mapping ?? null;
+  }
+
+  async listUsers() {
+    return this.state.users;
+  }
+
+  async countUsers() {
+    return this.state.users.length;
+  }
+
+  async findUserByEmail(email) {
+    return this.state.users.find((u) => u.email === email) ?? null;
+  }
+
+  async findUserById(id) {
+    return this.state.users.find((u) => u.id === id) ?? null;
+  }
+
+  async insertUser(user) {
+    this.state.users.push(user);
+    await this.#persist();
+    return user;
+  }
+
+  async updateUser(id, patch) {
+    const found = this.state.users.find((u) => u.id === id);
+    if (!found) return null;
+    Object.assign(found, patch);
+    await this.#persist();
+    return found;
+  }
+
+  async deleteUser(id) {
+    const before = this.state.users.length;
+    this.state.users = this.state.users.filter((u) => u.id !== id);
+    await this.#persist();
+    return this.state.users.length < before;
+  }
+
+  async getSetting(key) {
+    return this.state.settings?.[key] ?? null;
+  }
+
+  async setSetting(key, value) {
+    this.state.settings = { ...(this.state.settings ?? {}), [key]: value };
+    await this.#persist();
   }
 
   async recentActivity(limit = 50) {

@@ -102,6 +102,15 @@ globalThis.__trackerLocalApi = async function localApi(path, options = {}) {
     }
 
     if (pathname === '/api/session') return json({ ok: true });
+
+    // No accounts offline: the file is the permission. Whoever can open it can
+    // already read and change everything in it, so a login would be theatre.
+    if (pathname === '/api/auth/state') {
+      return json({ needsSetup: false, requiresSetupCode: false, disabled: true, roles: [] });
+    }
+    if (pathname === '/api/auth/me') {
+      return json({ user: { id: 'local', name: actor, role: 'admin', registers: [] } });
+    }
     if (pathname === '/api/health') return json({ ok: true, storage: 'browser' });
 
     // ---- records ----------------------------------------------------------

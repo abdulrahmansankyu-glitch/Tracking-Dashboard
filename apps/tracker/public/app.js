@@ -93,8 +93,12 @@ const state = {
   registerId: null,
   user: localStorage.getItem('tracker.user') ?? '',
   accessCode: localStorage.getItem('tracker.code') ?? '',
+  token: localStorage.getItem('tracker.token') ?? '',
+  me: null, // the signed-in account
+  authState: null, // { needsSetup, requiresSetupCode, roles, disabled }
+  users: null, // the team, for admins
   theme: localStorage.getItem('tracker.theme') ?? 'auto',
-  gate: null, // 'code' | 'name' | null
+  gate: null, // 'setup' | 'login' | 'name' | null
   dashboard: null,
   list: null,
   filterOptions: { actionBy: [], initiator: [], area: [] },
@@ -128,6 +132,7 @@ async function api(path, options = {}) {
   const headers = { ...(options.headers ?? {}) };
   if (state.user) headers['x-user-name'] = state.user;
   if (state.accessCode) headers['x-access-code'] = state.accessCode;
+  if (state.token) headers.authorization = `Bearer ${state.token}`;
   if (options.json !== undefined) {
     headers['content-type'] = 'application/json';
     options.body = JSON.stringify(options.json);
@@ -142,15 +147,13 @@ async function api(path, options = {}) {
     ? await globalThis.__trackerLocalApi(path, { ...options, headers })
     : await fetch(path, { ...options, headers });
 
-  // Checking a code is the one place a 401 is an answer rather than a problem —
-  // sending the user back to the gate they are already standing at would replace
-  // "that code is not right" with a vaguer message.
-  if (response.status === 401 && path !== '/api/session') {
-    state.accessCode = '';
-    localStorage.removeItem('tracker.code');
-    state.gate = 'code';
-    render();
-    throw new Error('Team access code required.');
+  // The sign-in routes are the one place a 401 is an answer rather than a
+  // problem — bouncing somebody back to the form they are already looking at
+  // would replace "that password is wrong" with something vaguer.
+  const isAuthRoute = ['/api/session', '/api/auth/login', '/api/auth/setup', '/api/auth/password'].includes(path);
+  if (response.status === 401 && !isAuthRoute) {
+    signOut({ silent: true });
+    throw new Error('Please sign in.');
   }
 
   const isJson = (response.headers.get('content-type') ?? '').includes('application/json');
@@ -197,6 +200,9 @@ function toast(message) {
 // ------------------------------------------------------------------ chrome --
 
 const registerById = (id) => state.config?.registers.find((r) => r.id === id) ?? null;
+
+const ROLE_LABELS = { viewer: 'Viewer', editor: 'Editor', admin: 'Admin' };
+const roleLabel = (role) => ROLE_LABELS[role] ?? role;
 
 const PRIORITY_CLASS = {
   Critical: 'p-critical',
@@ -419,9 +425,56 @@ function go(view, registerId = null) {
 
 // ------------------------------------------------------------------- gates --
 
+/** What the signed-in account may do. Offline builds behave as a lone admin. */
+const canWrite = () => ['editor', 'admin'].includes(state.me?.role);
+// Managing accounts only means something where accounts exist. The offline build
+// treats its holder as an admin so nothing is hidden from them, but there is
+// nobody to administer.
+const canManage = () => state.me?.role === 'admin' && !state.authState?.disabled;
+
+/** The registers this account may open, in the catalogue's order. */
+function myRegisters() {
+  const all = state.config?.registers ?? [];
+  const allowed = state.me?.registers ?? [];
+  return allowed.length ? all.filter((r) => allowed.includes(r.id)) : all;
+}
+
+function signOut({ silent = false } = {}) {
+  state.token = '';
+  state.me = null;
+  state.users = null;
+  localStorage.removeItem('tracker.token');
+  state.gate = 'login';
+  state.dashboard = null;
+  state.list = null;
+  render();
+  if (!silent) toast('Signed out.');
+}
+
+/** A labelled input that keeps its value in `form` and its focus across redraws. */
+const formField = (form, key, label, { type = 'text', placeholder = '', autofocus = false } = {}) =>
+  h(
+    'label',
+    { class: 'field' },
+    h('span', null, label),
+    h('input', {
+      type,
+      id: `auth-${key}`,
+      value: form[key] ?? '',
+      placeholder,
+      autofocus: autofocus ? 'autofocus' : null,
+      autocomplete: type === 'password' ? 'current-password' : 'on',
+      oninput: (e) => {
+        form[key] = e.target.value;
+      },
+    }),
+  );
+
+const authForm = {};
+
 function renderGate() {
-  if (state.gate === 'code') {
-    let value = '';
+  // ---- first run: nobody has an account yet ------------------------------
+  if (state.gate === 'setup') {
     return h(
       'div',
       { class: 'scrim modal-centre' },
@@ -432,32 +485,81 @@ function renderGate() {
           onsubmit: async (event) => {
             event.preventDefault();
             try {
-              await api('/api/session', { json: { accessCode: value } });
-              state.accessCode = value;
-              localStorage.setItem('tracker.code', value);
-              state.gate = state.user ? null : 'name';
-              if (!state.gate) go('dashboard');
-              else render();
+              const result = await api('/api/auth/setup', { json: { ...authForm } });
+              acceptSession(result);
             } catch (error) {
               state.error = error.message;
               render();
             }
           },
         },
-        h('h2', null, 'Team access code'),
+        h('h2', null, 'Create the first account'),
         h(
           'p',
           { class: 'hint', style: 'margin: 8px 0 16px' },
-          'This tracker is shared with your team. Enter the code your supervisor gave you.',
+          'This account is the administrator — it can add the rest of your team and choose what each person may do.',
         ),
         state.error && h('div', { class: 'banner error', style: 'margin-bottom: 12px' }, state.error),
         h(
+          'div',
+          { style: 'display: flex; flex-direction: column; gap: 12px' },
+          state.authState?.requiresSetupCode &&
+            formField(authForm, 'accessCode', 'Team access code', {
+              type: 'password',
+              autofocus: true,
+            }),
+          formField(authForm, 'name', 'Your name', { placeholder: 'e.g. Abdul Rahman' }),
+          formField(authForm, 'email', 'Email', { type: 'email', placeholder: 'you@company.com' }),
+          formField(authForm, 'password', 'Password', {
+            type: 'password',
+            placeholder: 'At least 8 characters',
+          }),
+        ),
+        h(
+          'div',
+          { style: 'margin-top: 18px; display: flex; justify-content: flex-end' },
+          h('button', { class: 'btn primary', type: 'submit' }, 'Create account'),
+        ),
+      ),
+    );
+  }
+
+  // ---- offline build: no accounts, just a name for the audit trail -------
+  if (state.gate === 'name') {
+    let value = state.user;
+    return h(
+      'div',
+      { class: 'scrim modal-centre' },
+      h(
+        'form',
+        {
+          class: 'modal',
+          onsubmit: (event) => {
+            event.preventDefault();
+            const name = value.trim();
+            if (!name) return;
+            state.user = name;
+            localStorage.setItem('tracker.user', name);
+            state.me = { id: 'local', name, role: 'admin', registers: [] };
+            state.gate = null;
+            go('dashboard');
+          },
+        },
+        h('h2', null, 'Who are you?'),
+        h(
+          'p',
+          { class: 'hint', style: 'margin: 8px 0 16px' },
+          'This offline copy has no accounts. Your name is recorded against everything you change.',
+        ),
+        h(
           'label',
           { class: 'field' },
-          h('span', null, 'Access code'),
+          h('span', null, 'Your name'),
           h('input', {
-            type: 'password',
-            id: 'gate-code',
+            type: 'text',
+            id: 'gate-name',
+            value: state.user,
+            placeholder: 'e.g. Abdul Rahman',
             autofocus: 'autofocus',
             oninput: (e) => {
               value = e.target.value;
@@ -467,13 +569,13 @@ function renderGate() {
         h(
           'div',
           { style: 'margin-top: 16px; display: flex; justify-content: flex-end' },
-          h('button', { class: 'btn primary', type: 'submit' }, 'Continue'),
+          h('button', { class: 'btn primary', type: 'submit' }, 'Start'),
         ),
       ),
     );
   }
 
-  let value = state.user;
+  // ---- normal sign-in ----------------------------------------------------
   return h(
     'div',
     { class: 'scrim modal-centre' },
@@ -481,44 +583,69 @@ function renderGate() {
       'form',
       {
         class: 'modal',
-        onsubmit: (event) => {
+        onsubmit: async (event) => {
           event.preventDefault();
-          const name = value.trim();
-          if (!name) return;
-          state.user = name;
-          localStorage.setItem('tracker.user', name);
-          state.gate = null;
-          go('dashboard');
+          try {
+            const result = await api('/api/auth/login', {
+              json: { email: authForm.email, password: authForm.password },
+            });
+            acceptSession(result);
+          } catch (error) {
+            state.error = error.message;
+            render();
+          }
         },
       },
-      h('h2', null, 'Who are you?'),
       h(
-        'p',
-        { class: 'hint', style: 'margin: 8px 0 16px' },
-        'Your name is recorded against every entry you add or change, so the team can see who updated what. No password needed.',
+        'div',
+        { class: 'brand', style: 'padding: 0 0 14px' },
+        h('div', { class: 'brand-mark' }, 'EA'),
+        h(
+          'div',
+          { class: 'brand-text' },
+          h('strong', null, 'Activity Tracker'),
+          h('span', null, 'Engineering — SHP / DCU'),
+        ),
       ),
+      h('h2', null, 'Sign in'),
+      state.error &&
+        h('div', { class: 'banner error', style: 'margin: 12px 0 0' }, state.error),
       h(
-        'label',
-        { class: 'field' },
-        h('span', null, 'Your name'),
-        h('input', {
-          type: 'text',
-          id: 'gate-name',
-          value: state.user,
-          placeholder: 'e.g. Abdul Rahman',
-          autofocus: 'autofocus',
-          oninput: (e) => {
-            value = e.target.value;
-          },
+        'div',
+        { style: 'display: flex; flex-direction: column; gap: 12px; margin-top: 14px' },
+        formField(authForm, 'email', 'Email', {
+          type: 'email',
+          placeholder: 'you@company.com',
+          autofocus: true,
         }),
+        formField(authForm, 'password', 'Password', { type: 'password' }),
       ),
       h(
         'div',
-        { style: 'margin-top: 16px; display: flex; justify-content: flex-end' },
-        h('button', { class: 'btn primary', type: 'submit' }, 'Start'),
+        { style: 'margin-top: 18px; display: flex; justify-content: flex-end' },
+        h('button', { class: 'btn primary', type: 'submit' }, 'Sign in'),
+      ),
+      h(
+        'p',
+        { class: 'hint', style: 'margin: 14px 0 0' },
+        'No account? Ask an administrator on your team to create one for you.',
       ),
     ),
   );
+}
+
+/** Store a freshly issued session and go to work. */
+function acceptSession({ token, user }) {
+  state.token = token;
+  state.me = user;
+  state.user = user.name;
+  state.error = null;
+  state.gate = null;
+  localStorage.setItem('tracker.token', token);
+  localStorage.setItem('tracker.user', user.name);
+  authForm.password = '';
+  authForm.accessCode = '';
+  go('dashboard');
 }
 
 // ----------------------------------------------------------------- sidebar --
@@ -555,7 +682,7 @@ function renderSidebar() {
     ),
 
     h('div', { class: 'nav-label' }, 'Registers'),
-    (state.config?.registers ?? []).map((register) => {
+    myRegisters().map((register) => {
       const stat = counts.get(register.id);
       const late = stat?.overdue ?? 0;
       return h(
@@ -577,16 +704,17 @@ function renderSidebar() {
     }),
 
     h('div', { class: 'nav-label' }, 'Data'),
-    h(
-      'button',
-      {
-        class: 'nav-item',
-        'aria-current': String(state.view === 'import'),
-        onclick: () => go('import'),
-      },
-      h('span', { class: 'short' }, '↑'),
-      h('span', { class: 'grow' }, 'Import Excel'),
-    ),
+    canWrite() &&
+      h(
+        'button',
+        {
+          class: 'nav-item',
+          'aria-current': String(state.view === 'import'),
+          onclick: () => go('import'),
+        },
+        h('span', { class: 'short' }, '↑'),
+        h('span', { class: 'grow' }, 'Import Excel'),
+      ),
     h(
       'button',
       { class: 'nav-item', onclick: () => download('/api/export') },
@@ -604,22 +732,42 @@ function renderSidebar() {
       h('span', { class: 'grow' }, 'Recent changes'),
     ),
 
-    h(
-      'div',
-      { class: 'sidebar-foot' },
-      h('div', null, `Signed in as ${state.user || '—'}`),
+    canManage() &&
       h(
         'button',
         {
-          class: 'btn ghost sm',
-          style: 'margin-top: 6px; padding-left: 0',
-          onclick: () => {
-            state.gate = 'name';
-            render();
-          },
+          class: 'nav-item',
+          'aria-current': String(state.view === 'settings'),
+          onclick: () => go('settings'),
         },
-        'Change name',
+        h('span', { class: 'short' }, '⚙'),
+        h('span', { class: 'grow' }, 'Settings'),
       ),
+
+    h(
+      'div',
+      { class: 'sidebar-foot' },
+      h('div', null, `Signed in as ${state.me?.name || state.user || '—'}`),
+      state.me?.role &&
+        h('div', { style: 'margin-top: 2px' }, h('span', { class: 'chip p-medium' }, roleLabel(state.me.role))),
+      state.authState?.disabled
+        ? h(
+            'button',
+            {
+              class: 'btn ghost sm',
+              style: 'margin-top: 6px; padding-left: 0',
+              onclick: () => {
+                state.gate = 'name';
+                render();
+              },
+            },
+            'Change name',
+          )
+        : h(
+            'button',
+            { class: 'btn ghost sm', style: 'margin-top: 6px; padding-left: 0', onclick: () => signOut() },
+            'Sign out',
+          ),
     ),
   );
 }
@@ -639,7 +787,11 @@ function renderDashboard() {
     h(
       'div',
       { class: 'kpis' },
-      kpi('Total Jobs', t.all, 'across all seven registers'),
+      kpi(
+        'Total Jobs',
+        t.all,
+        `across ${myRegisters().length} register${myRegisters().length === 1 ? '' : 's'}`,
+      ),
       kpi('Open', t.open, 'still to do'),
       kpi('Closed', t.closed, 'completed, cancelled or archived'),
       kpi(`Due in ${state.config.dueSoonDays} days`, t.dueSoon, 'the month ahead'),
@@ -926,12 +1078,13 @@ function renderRegister() {
     h(
       'div',
       { class: 'toolbar' },
-      h(
-        'button',
-        { class: 'btn primary', onclick: () => openNew(register.id) },
-        '+ Add entry',
-      ),
-      h('button', { class: 'btn', onclick: () => go('import') }, 'Import from Excel'),
+      canWrite() &&
+        h(
+          'button',
+          { class: 'btn primary', onclick: () => openNew(register.id) },
+          '+ Add entry',
+        ),
+      canWrite() && h('button', { class: 'btn', onclick: () => go('import') }, 'Import from Excel'),
       h(
         'button',
         { class: 'btn', onclick: () => download(`/api/export?register=${register.id}`) },
@@ -1216,7 +1369,7 @@ function renderDrawer() {
       h(
         'footer',
         null,
-        !isNew && h('button', { class: 'btn danger', onclick: remove }, 'Delete'),
+        !isNew && canWrite() && h('button', { class: 'btn danger', onclick: remove }, 'Delete'),
         h('div', { class: 'spacer', style: 'flex: 1' }),
         h(
           'button',
@@ -1227,9 +1380,10 @@ function renderDrawer() {
               render();
             },
           },
-          'Cancel',
+          canWrite() ? 'Cancel' : 'Close',
         ),
-        h('button', { class: 'btn primary', onclick: save }, isNew ? 'Add entry' : 'Save changes'),
+        canWrite() &&
+          h('button', { class: 'btn primary', onclick: save }, isNew ? 'Add entry' : 'Save changes'),
       ),
     ),
   );
@@ -1734,12 +1888,369 @@ function renderActivity() {
   );
 }
 
+
+// ---------------------------------------------------------------- settings --
+
+const userDraft = { registers: [] };
+
+/**
+ * Accounts and what each person may do.
+ *
+ * Two dimensions, because they answer different questions: the role says what
+ * kind of thing somebody may do, and the register list says where. A contractor
+ * who updates only PDM findings is an editor limited to PDM — expressing that
+ * as a role would mean inventing a role per combination.
+ */
+function renderSettings() {
+  if (!canManage()) {
+    return h('div', { class: 'content' }, h('div', { class: 'banner error' }, 'Only an admin can open Settings.'));
+  }
+
+  if (state.users === null) {
+    api('/api/users')
+      .then((data) => {
+        state.users = data.users;
+        render();
+      })
+      .catch((error) => {
+        state.users = [];
+        toast(error.message);
+      });
+    return h('div', { class: 'content' }, h('div', { class: 'empty' }, h('span', { class: 'spin' }), ' Loading…'));
+  }
+
+  const reload = () => {
+    state.users = null;
+    render();
+  };
+
+  const registerCheckboxes = (selected, onToggle) =>
+    h(
+      'div',
+      { class: 'register-picker' },
+      h(
+        'label',
+        { class: 'switch' },
+        h('input', {
+          type: 'checkbox',
+          checked: selected.length === 0,
+          onchange: (e) => onToggle(e.target.checked ? [] : (state.config.registers ?? []).map((r) => r.id)),
+        }),
+        h('strong', null, 'All registers'),
+      ),
+      (state.config.registers ?? []).map((register) =>
+        h(
+          'label',
+          { class: 'switch' },
+          h('input', {
+            type: 'checkbox',
+            checked: selected.length === 0 || selected.includes(register.id),
+            disabled: selected.length === 0,
+            onchange: (e) =>
+              onToggle(
+                e.target.checked
+                  ? [...new Set([...selected, register.id])]
+                  : selected.filter((id) => id !== register.id),
+              ),
+          }),
+          register.name,
+        ),
+      ),
+    );
+
+  const saveUser = async (user, patch) => {
+    try {
+      await api(`/api/users/${user.id}`, { method: 'PATCH', json: patch });
+      toast(`Saved ${user.name}.`);
+      reload();
+    } catch (error) {
+      toast(error.message);
+    }
+  };
+
+  return h(
+    'div',
+    { class: 'content' },
+
+    h(
+      'section',
+      { class: 'card' },
+      h(
+        'header',
+        null,
+        h('h2', null, 'Your team'),
+        h('span', { class: 'hint' }, `${state.users.length} account${state.users.length === 1 ? '' : 's'}`),
+      ),
+      h(
+        'div',
+        { class: 'table-wrap', style: 'border: 0' },
+        h(
+          'table',
+          null,
+          h(
+            'thead',
+            null,
+            h(
+              'tr',
+              null,
+              h('th', null, 'Name'),
+              h('th', null, 'Email'),
+              h('th', null, 'Can do'),
+              h('th', null, 'Registers'),
+              h('th', null, 'Last signed in'),
+              h('th', null, ''),
+            ),
+          ),
+          h(
+            'tbody',
+            null,
+            state.users.map((user) =>
+              h(
+                'tr',
+                null,
+                h(
+                  'td',
+                  null,
+                  h('span', { class: 'cell-ref' }, user.name),
+                  user.id === state.me?.id && h('div', { class: 'hint' }, 'that is you'),
+                  !user.active && h('div', null, h('span', { class: 'chip s-overdue' }, 'switched off')),
+                ),
+                h('td', { class: 'muted' }, user.email),
+                h(
+                  'td',
+                  null,
+                  h(
+                    'select',
+                    {
+                      value: user.role,
+                      onchange: (e) => saveUser(user, { role: e.target.value }),
+                    },
+                    (state.authState?.roles ?? []).map((r) =>
+                      h('option', { value: r.value, selected: user.role === r.value }, roleLabel(r.value)),
+                    ),
+                  ),
+                  h(
+                    'div',
+                    { class: 'hint', style: 'max-width: 260px' },
+                    (state.authState?.roles ?? []).find((r) => r.value === user.role)?.description ?? '',
+                  ),
+                ),
+                h(
+                  'td',
+                  null,
+                  registerCheckboxes(user.registers ?? [], (registers) => saveUser(user, { registers })),
+                ),
+                h('td', { class: 'muted' }, user.lastLoginAt ? fmtWhen(user.lastLoginAt) : 'never'),
+                h(
+                  'td',
+                  { style: 'white-space: nowrap' },
+                  h(
+                    'button',
+                    {
+                      class: 'btn sm',
+                      onclick: () => saveUser(user, { active: !user.active }),
+                    },
+                    user.active ? 'Switch off' : 'Switch on',
+                  ),
+                  ' ',
+                  h(
+                    'button',
+                    {
+                      class: 'btn sm',
+                      onclick: async () => {
+                        const password = prompt(`New password for ${user.name} (at least 8 characters):`);
+                        if (!password) return;
+                        await saveUser(user, { password });
+                      },
+                    },
+                    'Set password',
+                  ),
+                  ' ',
+                  user.id !== state.me?.id &&
+                    h(
+                      'button',
+                      {
+                        class: 'btn sm danger',
+                        onclick: async () => {
+                          if (!confirm(`Remove the account for ${user.name}?`)) return;
+                          try {
+                            await api(`/api/users/${user.id}`, { method: 'DELETE' });
+                            toast('Account removed.');
+                            reload();
+                          } catch (error) {
+                            toast(error.message);
+                          }
+                        },
+                      },
+                      'Remove',
+                    ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+
+    h(
+      'section',
+      { class: 'card' },
+      h('header', null, h('h2', null, 'Add someone')),
+      h(
+        'form',
+        {
+          style: 'display: flex; flex-direction: column; gap: 14px',
+          onsubmit: async (event) => {
+            event.preventDefault();
+            try {
+              await api('/api/users', { json: { ...userDraft } });
+              toast(`${userDraft.name} can now sign in.`);
+              userDraft.name = '';
+              userDraft.email = '';
+              userDraft.password = '';
+              userDraft.registers = [];
+              reload();
+            } catch (error) {
+              toast(error.message);
+            }
+          },
+        },
+        h(
+          'div',
+          { class: 'toolbar' },
+          h(
+            'label',
+            { class: 'field grow' },
+            h('span', null, 'Name'),
+            h('input', {
+              type: 'text',
+              id: 'new-name',
+              value: userDraft.name ?? '',
+              placeholder: 'e.g. Rehan',
+              required: 'required',
+              oninput: (e) => {
+                userDraft.name = e.target.value;
+              },
+            }),
+          ),
+          h(
+            'label',
+            { class: 'field grow' },
+            h('span', null, 'Email'),
+            h('input', {
+              type: 'email',
+              id: 'new-email',
+              value: userDraft.email ?? '',
+              placeholder: 'rehan@company.com',
+              required: 'required',
+              oninput: (e) => {
+                userDraft.email = e.target.value;
+              },
+            }),
+          ),
+          h(
+            'label',
+            { class: 'field grow' },
+            h('span', null, 'First password'),
+            h('input', {
+              type: 'text',
+              id: 'new-password',
+              value: userDraft.password ?? '',
+              placeholder: 'At least 8 characters',
+              required: 'required',
+              oninput: (e) => {
+                userDraft.password = e.target.value;
+              },
+            }),
+          ),
+          h(
+            'label',
+            { class: 'field' },
+            h('span', null, 'Can do'),
+            h(
+              'select',
+              {
+                value: userDraft.role ?? 'viewer',
+                onchange: (e) => {
+                  userDraft.role = e.target.value;
+                  render();
+                },
+              },
+              (state.authState?.roles ?? []).map((r) =>
+                h('option', { value: r.value, selected: (userDraft.role ?? 'viewer') === r.value }, roleLabel(r.value)),
+              ),
+            ),
+          ),
+        ),
+        h(
+          'div',
+          null,
+          h('div', { class: 'nav-label', style: 'padding-left: 0' }, 'Which registers'),
+          registerCheckboxes(userDraft.registers ?? [], (registers) => {
+            userDraft.registers = registers;
+            render();
+          }),
+        ),
+        h(
+          'p',
+          { class: 'hint', style: 'margin: 0' },
+          'You will need to tell them this password yourself — the app does not send email. They can change it once they are in.',
+        ),
+        h(
+          'div',
+          null,
+          h('button', { class: 'btn primary', type: 'submit' }, 'Create account'),
+        ),
+      ),
+    ),
+
+    h(
+      'section',
+      { class: 'card' },
+      h('header', null, h('h2', null, 'Your password')),
+      h(
+        'form',
+        {
+          class: 'toolbar',
+          onsubmit: async (event) => {
+            event.preventDefault();
+            const currentPassword = $('#current-password').value;
+            const newPassword = $('#next-password').value;
+            try {
+              await api('/api/auth/password', { json: { currentPassword, newPassword } });
+              toast('Password changed.');
+              $('#current-password').value = '';
+              $('#next-password').value = '';
+            } catch (error) {
+              toast(error.message);
+            }
+          },
+        },
+        h(
+          'label',
+          { class: 'field grow' },
+          h('span', null, 'Current password'),
+          h('input', { type: 'password', id: 'current-password', required: 'required' }),
+        ),
+        h(
+          'label',
+          { class: 'field grow' },
+          h('span', null, 'New password'),
+          h('input', { type: 'password', id: 'next-password', required: 'required' }),
+        ),
+        h('button', { class: 'btn', type: 'submit' }, 'Change password'),
+      ),
+    ),
+  );
+}
+
 // ------------------------------------------------------------------ render --
 
 function titleFor() {
   if (state.view === 'dashboard') return ['Dashboard', 'Everything the team is tracking, in one place'];
   if (state.view === 'import') return ['Import Excel', 'One sheet at a time, into the register you choose'];
   if (state.view === 'activity') return ['Recent changes', 'Who changed what, and when'];
+  if (state.view === 'settings') return ['Settings', 'Accounts, and what each person may do'];
   const register = registerById(state.registerId);
   return [register?.name ?? 'Register', register?.description ?? ''];
 }
@@ -1768,8 +2279,8 @@ function render() {
 
   if (state.gate) {
     root.append(renderGate());
-    const field = $('#gate-code') ?? $('#gate-name');
-    field?.focus();
+    if (!focusId) ($('#gate-name') ?? $('#auth-accessCode') ?? $('#auth-email'))?.focus();
+    else document.getElementById(focusId)?.focus();
     return;
   }
 
@@ -1782,7 +2293,9 @@ function render() {
         ? renderRegister()
         : state.view === 'import'
           ? renderImport()
-          : renderActivity();
+          : state.view === 'settings'
+            ? renderSettings()
+            : renderActivity();
 
   root.append(
     h(
@@ -1812,7 +2325,8 @@ function render() {
             state.theme === 'dark' ? '☀ Light' : '☾ Dark',
           ),
           h('button', { class: 'btn', onclick: () => download('/api/export') }, '↓ Export all'),
-          h('button', { class: 'btn primary', onclick: () => go('import') }, '↑ Import Excel'),
+          canWrite() &&
+            h('button', { class: 'btn primary', onclick: () => go('import') }, '↑ Import Excel'),
         ),
         state.error && h('div', { class: 'content' }, h('div', { class: 'banner error' }, state.error)),
         // The standalone build says where its data lives. Someone who was handed a
@@ -1852,6 +2366,7 @@ async function boot() {
   applyTheme();
   try {
     state.config = await api('/api/config');
+    state.authState = await api('/api/auth/state');
   } catch {
     $('#root').replaceChildren(
       h('div', { class: 'empty' }, 'Cannot reach the tracker server. Is it running?'),
@@ -1859,11 +2374,40 @@ async function boot() {
     return;
   }
 
-  if (state.config.requiresAccessCode && !state.accessCode) state.gate = 'code';
-  else if (!state.user) state.gate = 'name';
+  // The offline build has no accounts — it asks for a name and treats whoever is
+  // holding the file as able to do everything, because they already are.
+  if (state.authState.disabled) {
+    if (state.user) {
+      state.me = { id: 'local', name: state.user, role: 'admin', registers: [] };
+      go('dashboard');
+    } else {
+      state.gate = 'name';
+      render();
+    }
+    return;
+  }
 
-  if (state.gate) render();
-  else go('dashboard');
+  if (state.authState.needsSetup) {
+    state.gate = 'setup';
+    render();
+    return;
+  }
+
+  if (!state.token) {
+    state.gate = 'login';
+    render();
+    return;
+  }
+
+  try {
+    const { user } = await api('/api/auth/me');
+    state.me = user;
+    state.user = user?.name ?? '';
+    go('dashboard');
+  } catch {
+    // The token was rejected — `api` has already cleared it and shown the form.
+    render();
+  }
 }
 
 boot();

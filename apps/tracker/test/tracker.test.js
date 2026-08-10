@@ -570,3 +570,229 @@ test('a later upload still replaces what an earlier one imported', async () => {
     assert.ok(listed.rows.every((r) => r.ref.startsWith('IWS-NEW')));
   });
 });
+
+// --------------------------------------------------------------- accounts ---
+
+/** Sign up the first admin and return a helper that calls the API as them. */
+async function withAdmin(run) {
+  return withServer(async (base) => {
+    const post = (path, body, token) =>
+      fetch(base + path, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+
+    const setup = await (
+      await post('/api/auth/setup', {
+        name: 'Abdul Rahman',
+        email: 'Abdul@Example.com',
+        password: 'shp-tracker-2026',
+      })
+    ).json();
+
+    const as = (token) => ({
+      get: (path) => fetch(base + path, { headers: token ? { authorization: `Bearer ${token}` } : {} }),
+      post: (path, body) => post(path, body, token),
+      patch: (path, body) =>
+        fetch(base + path, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        }),
+      del: (path) =>
+        fetch(base + path, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } }),
+    });
+
+    return run({ base, setup, as, post });
+  });
+}
+
+test('the first account becomes an admin, and the email is stored lowercased', async () => {
+  await withAdmin(async ({ setup, as }) => {
+    assert.equal(setup.user.role, 'admin');
+    assert.equal(setup.user.email, 'abdul@example.com', 'so signing in is not case-sensitive');
+    assert.ok(setup.token);
+
+    const me = await (await as(setup.token).get('/api/auth/me')).json();
+    assert.equal(me.user.id, setup.user.id);
+  });
+});
+
+test('once an account exists, the app is closed to strangers', async () => {
+  await withAdmin(async ({ base, as }) => {
+    assert.equal((await fetch(`${base}/api/records?register=iws`)).status, 401);
+    assert.equal((await as('not-a-real-token').get('/api/records?register=iws')).status, 401);
+
+    // And nobody can seize it by re-running setup.
+    const again = await fetch(`${base}/api/auth/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Intruder', email: 'x@y.com', password: 'password-12345' }),
+    });
+    assert.equal(again.status, 409);
+  });
+});
+
+test('a wrong password and an unknown email are refused identically', async () => {
+  await withAdmin(async ({ base }) => {
+    const attempt = (body) =>
+      fetch(`${base}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(async (r) => ({ status: r.status, body: await r.json() }));
+
+    const wrongPassword = await attempt({ email: 'abdul@example.com', password: 'nope' });
+    const unknownEmail = await attempt({ email: 'nobody@example.com', password: 'nope' });
+
+    // Otherwise the login form becomes a way to find out who works here.
+    assert.equal(wrongPassword.status, 401);
+    assert.deepEqual(wrongPassword.body, unknownEmail.body);
+  });
+});
+
+test('a viewer can read but cannot change anything', async () => {
+  await withAdmin(async ({ setup, as, base }) => {
+    const admin = as(setup.token);
+    await admin.post('/api/users', {
+      name: 'Nadeem',
+      email: 'nadeem@example.com',
+      password: 'inspection-2026',
+      role: 'viewer',
+    });
+
+    const login = await (
+      await fetch(`${base}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'nadeem@example.com', password: 'inspection-2026' }),
+      })
+    ).json();
+
+    const viewer = as(login.token);
+    assert.equal((await viewer.get('/api/records?register=iws')).status, 200);
+    assert.equal((await viewer.get('/api/export')).status, 200);
+
+    const created = await viewer.post('/api/records', { register: 'iws', data: { iwsNumber: 'X' } });
+    assert.equal(created.status, 403);
+
+    // And a viewer cannot promote themselves.
+    assert.equal((await viewer.get('/api/users')).status, 403);
+    assert.equal((await viewer.patch(`/api/users/${login.user.id}`, { role: 'admin' })).status, 403);
+  });
+});
+
+test('an editor limited to one register cannot reach the others', async () => {
+  await withAdmin(async ({ setup, as, base }) => {
+    const admin = as(setup.token);
+
+    // Seed a row in each of two registers, as the admin.
+    await admin.post('/api/records', { register: 'iws', data: { iwsNumber: 'IWS-1' } });
+    await admin.post('/api/records', { register: 'pdm', data: { equipmentTag: 'PDM-1' } });
+
+    await admin.post('/api/users', {
+      name: 'Rehan',
+      email: 'rehan@example.com',
+      password: 'conveyor-2026',
+      role: 'editor',
+      registers: ['iws'],
+    });
+
+    const login = await (
+      await fetch(`${base}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'rehan@example.com', password: 'conveyor-2026' }),
+      })
+    ).json();
+    const rehan = as(login.token);
+
+    assert.equal((await rehan.get('/api/records?register=iws')).status, 200);
+    assert.equal((await rehan.get('/api/records?register=pdm')).status, 403);
+    assert.equal(
+      (await rehan.post('/api/records', { register: 'pdm', data: { equipmentTag: 'X' } })).status,
+      403,
+    );
+
+    // The dashboard must not leak counts from a register they cannot open, nor
+    // show a card for one — an empty ring reads as "nothing there", not "not yours".
+    const dash = await (await rehan.get('/api/dashboard')).json();
+    assert.equal(dash.totals.all, 1, 'only the IWS row is counted');
+    assert.deepEqual(dash.byRegister.map((r) => r.id), ['iws']);
+
+    // Nor may an export quietly include it.
+    const exported = await rehan.get('/api/export');
+    assert.equal(exported.status, 200);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await exported.arrayBuffer());
+    assert.deepEqual(workbook.worksheets.map((w) => w.name), ['IWS']);
+  });
+});
+
+test('the last admin cannot lock everyone out', async () => {
+  await withAdmin(async ({ setup, as }) => {
+    const admin = as(setup.token);
+
+    const demote = await admin.patch(`/api/users/${setup.user.id}`, { role: 'viewer' });
+    assert.equal(demote.status, 400, 'demoting the only admin would leave nobody able to undo it');
+
+    const disable = await admin.patch(`/api/users/${setup.user.id}`, { active: false });
+    assert.equal(disable.status, 400);
+
+    // With a second admin in place it is allowed.
+    await admin.post('/api/users', {
+      name: 'Minhaj',
+      email: 'minhaj@example.com',
+      password: 'second-admin-2026',
+      role: 'admin',
+    });
+    assert.equal((await admin.patch(`/api/users/${setup.user.id}`, { role: 'viewer' })).status, 200);
+  });
+});
+
+test('a password is checked before it is accepted', async () => {
+  await withAdmin(async ({ setup, as }) => {
+    const admin = as(setup.token);
+    const weak = await admin.post('/api/users', {
+      name: 'Test',
+      email: 'weak@example.com',
+      password: 'short',
+    });
+    assert.equal(weak.status, 400);
+
+    const duplicate = await admin.post('/api/users', {
+      name: 'Duplicate',
+      email: 'ABDUL@example.com',
+      password: 'another-password',
+    });
+    assert.equal(duplicate.status, 409, 'the same email in different case is the same person');
+  });
+});
+
+test('passwords are stored hashed, never in a readable form', async () => {
+  const { hashPassword, verifyPassword } = await import('../src/auth.js');
+  const stored = hashPassword('conveyor-2026');
+
+  assert.ok(!stored.includes('conveyor-2026'));
+  assert.ok(stored.startsWith('scrypt$'));
+  assert.ok(verifyPassword('conveyor-2026', stored));
+  assert.ok(!verifyPassword('conveyor-2027', stored));
+  // Two accounts with the same password must not produce the same hash.
+  assert.notEqual(stored, hashPassword('conveyor-2026'));
+});
+
+test('a tampered or expired session token is refused', async () => {
+  const { signToken, verifyToken } = await import('../src/auth.js');
+  const secret = 'test-secret';
+  const token = signToken('user-1', secret);
+
+  assert.equal(verifyToken(token, secret), 'user-1');
+  assert.equal(verifyToken(token, 'different-secret'), null, 'a forged signature is refused');
+  assert.equal(verifyToken(`${token}x`, secret), null);
+  assert.equal(verifyToken(signToken('user-1', secret, -1000), secret), null, 'expired');
+  assert.equal(verifyToken('', secret), null);
+});

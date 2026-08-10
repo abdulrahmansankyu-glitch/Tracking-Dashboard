@@ -4,11 +4,14 @@
  * One process serves both the API and the browser app, so the team gets a single
  * URL to share and there is no cross-origin configuration to get wrong.
  *
- * Access control is a shared team code, not per-person accounts. The team already
- * shares these workbooks over email; making everyone maintain a password to see a
- * tracker they can already read would add administration without adding privacy.
- * Each person types their name once, and it is recorded against everything they
- * change — which is the accountability the register columns actually ask for.
+ * Access is per-person: everyone signs in, and an admin decides what each account
+ * may do — read only, edit, or administer — and which registers it may open.
+ * Every change is recorded against the account that made it.
+ *
+ * A deployment with no accounts yet falls back to the shared `TRACKER_ACCESS_CODE`,
+ * which is also what authorises creating the first admin. That keeps an existing
+ * deployment working through the upgrade and stops whoever finds the URL first
+ * from claiming it.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -18,6 +21,20 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import multer from 'multer';
 
+import {
+  ROLES,
+  ROLE_DESCRIPTIONS,
+  buildUser,
+  can,
+  canUseRegister,
+  hashPassword,
+  normaliseEmail,
+  passwordProblem,
+  signToken,
+  toUserApi,
+  verifyPassword,
+  verifyToken,
+} from './auth.js';
 import { buildWorkbook, inspectWorkbook, readSheet } from './excel.js';
 import { sanitiseData, summarise } from './query.js';
 import {
@@ -56,13 +73,28 @@ function stashUpload(filename, buffer) {
   return token;
 }
 
-const actorOf = (req) => {
-  const name = String(req.get('x-user-name') ?? '').trim();
-  return name ? name.slice(0, 80) : 'Unknown';
-};
+/**
+ * Who is doing this.
+ *
+ * The account on the request, once there is one. Before accounts existed the
+ * name came from a header the browser filled in, which was fine when the only
+ * gate was a shared code and nobody could be held to anything anyway.
+ */
+const actorOf = (req) => req.user?.name || String(req.get('x-user-name') ?? '').trim() || 'Unknown';
 
 function asError(res, status, message) {
   return res.status(status).json({ error: message });
+}
+
+/**
+ * Keep only real register ids. An empty list means "all registers", so a typo
+ * that silently dropped every entry would read as unrestricted rather than as
+ * the restriction somebody meant to apply.
+ */
+function sanitiseRegisters(input) {
+  if (!Array.isArray(input)) return [];
+  const known = new Set(REGISTERS.map((r) => r.id));
+  return [...new Set(input.filter((id) => known.has(id)))];
 }
 
 export async function createApp(env = process.env) {
@@ -82,10 +114,103 @@ export async function createApp(env = process.env) {
     !accessHash ||
     createHash('sha256').update(String(candidate ?? '').trim()).digest('hex') === accessHash;
 
-  const requireAccess = (req, res, next) => {
-    if (!accessHash) return next();
-    if (codeMatches(req.get('x-access-code'))) return next();
-    return asError(res, 401, 'Wrong or missing team access code.');
+  /**
+   * The secret that signs sessions.
+   *
+   * Taken from the environment when the operator sets one; otherwise generated
+   * once and kept in the database. Generating it per boot would sign the whole
+   * team out on every redeploy and every wake from sleep, which on a free
+   * instance is several times a day.
+   */
+  let sessionSecret = String(env.TRACKER_SESSION_SECRET ?? '').trim();
+  if (!sessionSecret) {
+    sessionSecret = await store.getSetting('session_secret');
+    if (!sessionSecret) {
+      sessionSecret = randomUUID() + randomUUID();
+      await store.setSetting('session_secret', sessionSecret);
+    }
+  }
+
+  /** An admin seeded from the environment, for a deployment that starts locked. */
+  if (env.TRACKER_ADMIN_EMAIL && env.TRACKER_ADMIN_PASSWORD && (await store.countUsers()) === 0) {
+    await store.insertUser(
+      buildUser({
+        name: env.TRACKER_ADMIN_NAME || 'Administrator',
+        email: env.TRACKER_ADMIN_EMAIL,
+        password: env.TRACKER_ADMIN_PASSWORD,
+        role: 'admin',
+      }),
+    );
+    console.log('[tracker] created the first admin account from the environment');
+  }
+
+  /** Attach the signed-in account to the request, when there is a valid token. */
+  const withUser = async (req, _res, next) => {
+    const header = req.get('authorization') ?? '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    const userId = token ? verifyToken(token, sessionSecret) : null;
+    if (userId) {
+      const found = await store.findUserById(userId);
+      if (found && found.active !== false) req.user = toUserApi(found);
+    }
+    next();
+  };
+  app.use(withUser);
+
+  /**
+   * Require an account, unless nobody has created one yet.
+   *
+   * Before the first account exists the app is open, so the first person can set
+   * themselves up; the setup route itself is what is guarded, by the team access
+   * code. After that, everything needs a session.
+   */
+  const requireAccess = (capability) => async (req, res, next) => {
+    if ((await store.countUsers()) === 0) {
+      // No accounts yet: fall back to the shared code, so an existing deployment
+      // keeps working right up until its owner creates the first login.
+      if (!accessHash || codeMatches(req.get('x-access-code'))) return next();
+      return asError(res, 401, 'Wrong or missing team access code.');
+    }
+
+    if (!req.user) return asError(res, 401, 'Please sign in.');
+    if (capability && !can(req.user, capability)) {
+      return asError(
+        res,
+        403,
+        capability === 'manage'
+          ? 'Only an admin can change accounts and permissions.'
+          : 'Your account has view-only access. Ask an admin if you need to make changes.',
+      );
+    }
+    next();
+  };
+
+  /** Narrow a records query to the registers this account may see. */
+  const scopeQuery = (req, query) => {
+    const allowed = req.user?.registers ?? [];
+    return allowed.length ? { ...query, registers: allowed.join(',') } : query;
+  };
+
+  const scopeRecords = (req, records) => {
+    const allowed = req.user?.registers ?? [];
+    return allowed.length ? records.filter((r) => allowed.includes(r.register)) : records;
+  };
+
+  /**
+   * Whether this request may touch a register.
+   *
+   * No signed-in account means the deployment has no accounts yet — the shared
+   * code is still the gate, and register restrictions have nobody to apply to.
+   * Asking `canUseRegister` directly gets this wrong: with no user it answers
+   * "no", which locked the pre-accounts path out of every register.
+   */
+  const mayUseRegister = (req, registerId) => !req.user || canUseRegister(req.user, registerId);
+
+  /** Refuse a register this account is not allowed to touch, and say so. */
+  const allowRegister = (req, res, registerId) => {
+    if (mayUseRegister(req, registerId)) return true;
+    asError(res, 403, 'Your account does not have access to that register.');
+    return false;
   };
 
   // ---- Open endpoints -----------------------------------------------------
@@ -113,17 +238,233 @@ export async function createApp(env = process.env) {
     res.json({ ok: true });
   });
 
-  // ---- Records ------------------------------------------------------------
+  // ---- Accounts -----------------------------------------------------------
 
-  app.get('/api/records', requireAccess, async (req, res, next) => {
+  const issue = async (user) => {
+    await store.updateUser(user.id, { last_login_at: new Date().toISOString() });
+    return { token: signToken(user.id, sessionSecret), user: toUserApi(user) };
+  };
+
+  app.get('/api/auth/state', async (_req, res, next) => {
     try {
-      res.json(await store.list(req.query));
+      res.json({
+        needsSetup: (await store.countUsers()) === 0,
+        // The first account is created with the team access code, so somebody who
+        // merely finds the URL before its owner does cannot make themselves admin.
+        requiresSetupCode: Boolean(accessHash),
+        roles: ROLES.map((role) => ({ value: role, description: ROLE_DESCRIPTIONS[role] })),
+      });
     } catch (error) {
       next(error);
     }
   });
 
-  app.get('/api/records/:id', requireAccess, async (req, res, next) => {
+  app.post('/api/auth/setup', async (req, res, next) => {
+    try {
+      if ((await store.countUsers()) > 0) {
+        return asError(res, 409, 'This tracker already has accounts. Sign in instead.');
+      }
+      if (!codeMatches(req.body?.accessCode)) {
+        return asError(res, 401, 'That team access code is not right.');
+      }
+
+      const email = normaliseEmail(req.body?.email);
+      if (!email.includes('@')) return asError(res, 400, 'Enter a valid email address.');
+
+      const problem = passwordProblem(req.body?.password);
+      if (problem) return asError(res, 400, problem);
+
+      const user = await store.insertUser(
+        buildUser({ name: req.body?.name, email, password: req.body.password, role: 'admin' }),
+      );
+
+      await store.logActivity({
+        id: randomUUID(),
+        at: new Date().toISOString(),
+        actor: user.name,
+        action: 'account',
+        register: null,
+        recordId: null,
+        summary: `${user.name} created the first admin account`,
+        detail: {},
+      });
+
+      res.status(201).json(await issue(user));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/auth/login', async (req, res, next) => {
+    try {
+      const email = normaliseEmail(req.body?.email);
+      const found = await store.findUserByEmail(email);
+
+      // One message for a wrong email and a wrong password: telling them apart
+      // turns the login form into a way to enumerate who works here.
+      if (!found || !verifyPassword(req.body?.password ?? '', found.password_hash)) {
+        return asError(res, 401, 'That email and password do not match.');
+      }
+      if (found.active === false) {
+        return asError(res, 403, 'That account has been switched off. Ask an admin.');
+      }
+
+      res.json(await issue(found));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/auth/me', requireAccess('read'), (req, res) => {
+    res.json({ user: req.user ?? null });
+  });
+
+  app.post('/api/auth/password', requireAccess('read'), async (req, res, next) => {
+    try {
+      if (!req.user) return asError(res, 401, 'Please sign in.');
+
+      const found = await store.findUserById(req.user.id);
+      if (!verifyPassword(req.body?.currentPassword ?? '', found.password_hash)) {
+        return asError(res, 401, 'Your current password is not right.');
+      }
+
+      const problem = passwordProblem(req.body?.newPassword);
+      if (problem) return asError(res, 400, problem);
+
+      await store.updateUser(found.id, { password_hash: hashPassword(req.body.newPassword) });
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ---- Managing the team --------------------------------------------------
+
+  app.get('/api/users', requireAccess('manage'), async (_req, res, next) => {
+    try {
+      res.json({ users: (await store.listUsers()).map(toUserApi) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/users', requireAccess('manage'), async (req, res, next) => {
+    try {
+      const email = normaliseEmail(req.body?.email);
+      if (!email.includes('@')) return asError(res, 400, 'Enter a valid email address.');
+      if (await store.findUserByEmail(email)) {
+        return asError(res, 409, 'Somebody already has an account with that email.');
+      }
+
+      const problem = passwordProblem(req.body?.password);
+      if (problem) return asError(res, 400, problem);
+
+      const user = await store.insertUser(
+        buildUser({
+          name: req.body?.name,
+          email,
+          password: req.body.password,
+          role: req.body?.role,
+          registers: sanitiseRegisters(req.body?.registers),
+        }),
+      );
+
+      await store.logActivity({
+        id: randomUUID(),
+        at: new Date().toISOString(),
+        actor: actorOf(req),
+        action: 'account',
+        register: null,
+        recordId: null,
+        summary: `Added ${user.name} as ${user.role}`,
+        detail: {},
+      });
+
+      res.status(201).json(toUserApi(user));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch('/api/users/:id', requireAccess('manage'), async (req, res, next) => {
+    try {
+      const found = await store.findUserById(req.params.id);
+      if (!found) return asError(res, 404, 'That account no longer exists.');
+
+      const patch = {};
+      if (typeof req.body?.name === 'string') patch.name = req.body.name.trim().slice(0, 80);
+      if (ROLES.includes(req.body?.role)) patch.role = req.body.role;
+      if (Array.isArray(req.body?.registers)) patch.registers = sanitiseRegisters(req.body.registers);
+      if (typeof req.body?.active === 'boolean') patch.active = req.body.active;
+
+      if (req.body?.password) {
+        const problem = passwordProblem(req.body.password);
+        if (problem) return asError(res, 400, problem);
+        patch.password_hash = hashPassword(req.body.password);
+      }
+
+      // Locking out the last admin would leave nobody able to unlock it — the one
+      // change that cannot be undone from inside the app.
+      const losingAdmin =
+        found.role === 'admin' && (patch.role === 'viewer' || patch.role === 'editor' || patch.active === false);
+      if (losingAdmin && (await countActiveAdmins(found.id)) === 0) {
+        return asError(res, 400, 'This is the only admin. Make somebody else an admin first.');
+      }
+
+      const saved = await store.updateUser(found.id, patch);
+      res.json(toUserApi(saved));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete('/api/users/:id', requireAccess('manage'), async (req, res, next) => {
+    try {
+      const found = await store.findUserById(req.params.id);
+      if (!found) return asError(res, 404, 'That account no longer exists.');
+      if (found.id === req.user?.id) {
+        return asError(res, 400, 'You cannot delete the account you are signed in with.');
+      }
+      if (found.role === 'admin' && (await countActiveAdmins(found.id)) === 0) {
+        return asError(res, 400, 'This is the only admin. Make somebody else an admin first.');
+      }
+
+      await store.deleteUser(found.id);
+      await store.logActivity({
+        id: randomUUID(),
+        at: new Date().toISOString(),
+        actor: actorOf(req),
+        action: 'account',
+        register: null,
+        recordId: null,
+        summary: `Removed the account for ${found.name}`,
+        detail: {},
+      });
+
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /** Active admins other than `excludeId`. */
+  async function countActiveAdmins(excludeId) {
+    const users = await store.listUsers();
+    return users.filter((u) => u.role === 'admin' && u.active !== false && u.id !== excludeId).length;
+  }
+
+  // ---- Records ------------------------------------------------------------
+
+  app.get('/api/records', requireAccess('read'), async (req, res, next) => {
+    try {
+      if (req.query.register && !allowRegister(req, res, req.query.register)) return;
+      res.json(await store.list(scopeQuery(req, req.query)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/records/:id', requireAccess('read'), async (req, res, next) => {
     try {
       const record = await store.get(req.params.id);
       if (!record) return asError(res, 404, 'That entry no longer exists.');
@@ -133,10 +474,11 @@ export async function createApp(env = process.env) {
     }
   });
 
-  app.post('/api/records', requireAccess, async (req, res, next) => {
+  app.post('/api/records', requireAccess('write'), async (req, res, next) => {
     try {
       const register = getRegister(req.body?.register);
       if (!register) return asError(res, 400, 'Choose a register for this entry.');
+      if (!allowRegister(req, res, register.id)) return;
 
       const data = sanitiseData(register, req.body?.data);
       if (!Object.keys(data).length) return asError(res, 400, 'Fill in at least one field.');
@@ -170,13 +512,14 @@ export async function createApp(env = process.env) {
     }
   });
 
-  app.patch('/api/records/:id', requireAccess, async (req, res, next) => {
+  app.patch('/api/records/:id', requireAccess('write'), async (req, res, next) => {
     try {
       const existing = await store.get(req.params.id);
       if (!existing) return asError(res, 404, 'That entry no longer exists.');
 
       const register = getRegister(existing.register);
       if (!register) return asError(res, 400, 'That entry belongs to an unknown register.');
+      if (!allowRegister(req, res, register.id)) return;
 
       // A PATCH carries only the fields that changed, so unmentioned columns keep
       // their imported values. An explicit empty string clears a field.
@@ -226,10 +569,11 @@ export async function createApp(env = process.env) {
     }
   });
 
-  app.delete('/api/records/:id', requireAccess, async (req, res, next) => {
+  app.delete('/api/records/:id', requireAccess('write'), async (req, res, next) => {
     try {
       const existing = await store.get(req.params.id);
       if (!existing) return asError(res, 404, 'That entry no longer exists.');
+      if (!allowRegister(req, res, existing.register)) return;
 
       await store.remove(req.params.id);
       await store.logActivity({
@@ -251,12 +595,20 @@ export async function createApp(env = process.env) {
 
   // ---- Dashboard ----------------------------------------------------------
 
-  app.get('/api/dashboard', requireAccess, async (req, res, next) => {
+  app.get('/api/dashboard', requireAccess('read'), async (req, res, next) => {
     try {
       const registerFilter = req.query.register || null;
-      const records = await store.all(registerFilter);
+      if (registerFilter && !allowRegister(req, res, registerFilter)) return;
+      const records = scopeRecords(req, await store.all(registerFilter));
+      const summary = summarise(records);
+
+      // A restricted account gets cards only for its own registers. Leaving the
+      // others in showed a row of empty rings for work the reader cannot open,
+      // which reads as "there is nothing there" rather than "this is not yours".
+      summary.byRegister = summary.byRegister.filter((r) => mayUseRegister(req, r.id));
+
       res.json({
-        ...summarise(records),
+        ...summary,
         activity: await store.recentActivity(15),
         generatedAt: new Date().toISOString(),
       });
@@ -265,9 +617,9 @@ export async function createApp(env = process.env) {
     }
   });
 
-  app.get('/api/filters', requireAccess, async (req, res, next) => {
+  app.get('/api/filters', requireAccess('read'), async (req, res, next) => {
     try {
-      const records = await store.all(req.query.register || null);
+      const records = scopeRecords(req, await store.all(req.query.register || null));
       const distinct = (key) =>
         [...new Set(records.map((r) => r[key]).filter(Boolean))].sort((a, b) =>
           String(a).localeCompare(String(b)),
@@ -285,7 +637,7 @@ export async function createApp(env = process.env) {
 
   // ---- Excel import -------------------------------------------------------
 
-  app.post('/api/import/inspect', requireAccess, upload.single('file'), async (req, res, next) => {
+  app.post('/api/import/inspect', requireAccess('write'), upload.single('file'), async (req, res, next) => {
     try {
       if (!req.file) return asError(res, 400, 'Attach an .xlsx file to upload.');
 
@@ -306,7 +658,7 @@ export async function createApp(env = process.env) {
     }
   });
 
-  app.post('/api/import/commit', requireAccess, async (req, res, next) => {
+  app.post('/api/import/commit', requireAccess('write'), async (req, res, next) => {
     try {
       const pending = PENDING_UPLOADS.get(req.body?.token);
       if (!pending) {
@@ -324,6 +676,10 @@ export async function createApp(env = process.env) {
         const register = getRegister(selection.register);
         if (!register) {
           results.push({ sheet: selection.sheet, error: `Unknown register: ${selection.register}` });
+          continue;
+        }
+        if (!mayUseRegister(req, register.id)) {
+          results.push({ sheet: selection.sheet, error: `No access to ${register.name}` });
           continue;
         }
 
@@ -409,7 +765,7 @@ export async function createApp(env = process.env) {
     }
   });
 
-  app.get('/api/imports', requireAccess, async (req, res, next) => {
+  app.get('/api/imports', requireAccess('read'), async (req, res, next) => {
     try {
       const all = await store.listImports();
       // Each register page shows the files that landed in it, so "where did this
@@ -424,7 +780,7 @@ export async function createApp(env = process.env) {
     }
   });
 
-  app.get('/api/imports/:id/file', requireAccess, async (req, res, next) => {
+  app.get('/api/imports/:id/file', requireAccess('read'), async (req, res, next) => {
     try {
       const file = await store.getImportFile(req.params.id);
       if (!file) return asError(res, 404, 'That file is no longer stored.');
@@ -442,10 +798,13 @@ export async function createApp(env = process.env) {
 
   // ---- Excel export -------------------------------------------------------
 
-  app.get('/api/export', requireAccess, async (req, res, next) => {
+  app.get('/api/export', requireAccess('read'), async (req, res, next) => {
     try {
       const requested = req.query.register ? String(req.query.register) : null;
-      const registers = requested ? [getRegister(requested)].filter(Boolean) : REGISTERS;
+      if (requested && !allowRegister(req, res, requested)) return;
+      const registers = (requested ? [getRegister(requested)].filter(Boolean) : REGISTERS).filter(
+        (r) => mayUseRegister(req, r.id),
+      );
       if (!registers.length) return asError(res, 400, 'Unknown register.');
 
       const groups = [];
@@ -471,7 +830,7 @@ export async function createApp(env = process.env) {
   });
 
   /** An empty workbook with the right headers — the fastest way to start a register. */
-  app.get('/api/template', requireAccess, async (req, res, next) => {
+  app.get('/api/template', requireAccess('read'), async (req, res, next) => {
     try {
       const register = getRegister(req.query.register);
       if (!register) return asError(res, 400, 'Unknown register.');
@@ -491,7 +850,7 @@ export async function createApp(env = process.env) {
     }
   });
 
-  app.get('/api/activity', requireAccess, async (_req, res, next) => {
+  app.get('/api/activity', requireAccess('read'), async (_req, res, next) => {
     try {
       res.json({ activity: await store.recentActivity(60) });
     } catch (error) {
