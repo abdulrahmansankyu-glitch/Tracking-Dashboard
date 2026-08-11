@@ -33,6 +33,7 @@ import {
   toDateOnly,
   todayIso,
 } from '../src/registers.js';
+import { createMailer } from '../src/mailer.js';
 import {
   bandOf,
   bandsSendingOn,
@@ -1286,4 +1287,112 @@ test('reminder settings are admin-only, and credentials are never served', async
     assert.equal(JSON.stringify(body).includes('PASSWORD'), false);
     assert.equal(JSON.stringify(body).includes('api-key'), false);
   });
+});
+
+// ------------------------------------------------- the Outlook (Graph) path --
+
+/**
+ * Stand in for the network for the duration of one test.
+ *
+ * `node:test` runs a file's tests one after another, so replacing the global
+ * and restoring it in `finally` cannot leak into the tests that talk to a real
+ * local server.
+ */
+async function withStubbedFetch(handler, run) {
+  const calls = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    return handler(String(url), options);
+  };
+  try {
+    return await run(calls);
+  } finally {
+    globalThis.fetch = real;
+  }
+}
+
+const GRAPH_ENV = {
+  TRACKER_GRAPH_TENANT_ID: 'tenant-abc',
+  TRACKER_GRAPH_CLIENT_ID: 'client-abc',
+  TRACKER_GRAPH_CLIENT_SECRET: 'secret-abc',
+  TRACKER_MAIL_FROM: 'Engineering Tracker <engineering@sankyu.example>',
+};
+
+test('a company Outlook mailbox is detected, and each missing piece is named', () => {
+  assert.equal(createMailer(GRAPH_ENV).provider, 'graph');
+  assert.equal(createMailer(GRAPH_ENV).configured, true);
+
+  // Naming the wrong variable is worse than naming none: it sends somebody to
+  // check a setting that is already correct. Each answer names what is missing.
+  assert.match(
+    createMailer({ TRACKER_GRAPH_CLIENT_ID: 'c' }).problem,
+    /TRACKER_GRAPH_TENANT_ID/,
+  );
+  assert.match(
+    createMailer({ TRACKER_GRAPH_CLIENT_ID: 'c', TRACKER_GRAPH_TENANT_ID: 't' }).problem,
+    /TRACKER_GRAPH_CLIENT_SECRET/,
+  );
+  assert.match(
+    createMailer({ ...GRAPH_ENV, TRACKER_MAIL_FROM: '' }).problem,
+    /mailbox the reminders should come from/,
+  );
+});
+
+test('sending through Graph keeps the plain-text alternative, and reuses its token', async () => {
+  const ok = (body, status = 200) =>
+    new Response(body, { status, headers: { 'content-type': 'application/json' } });
+
+  await withStubbedFetch(
+    (url) =>
+      url.includes('login.microsoftonline.com')
+        ? ok(JSON.stringify({ access_token: 'tok-123', expires_in: 3600 }))
+        : new Response('', { status: 202 }),
+    async (calls) => {
+      const mailer = createMailer(GRAPH_ENV);
+      await mailer.send({ to: 'rehan@sankyu.example', subject: 'Overdue — 2', html: '<p>Hi</p>', text: 'Hi' });
+      await mailer.send({ to: 'nandy@sankyu.example', subject: 'Overdue — 1', html: '<p>Yo</p>', text: 'Yo' });
+
+      // One token, two sends. A token lasts an hour and a run finishes in
+      // seconds, so fetching one per recipient is a round trip against a login
+      // endpoint that rate-limits, for nothing.
+      assert.equal(calls.length, 3);
+      assert.equal(calls.filter((c) => c.url.includes('login.microsoftonline')).length, 1);
+
+      const send = calls[1];
+      assert.equal(send.url, 'https://graph.microsoft.com/v1.0/users/engineering%40sankyu.example/sendMail');
+      assert.equal(send.options.headers.authorization, 'Bearer tok-123');
+      // text/plain, not JSON: Graph's JSON message object carries a single body,
+      // which would silently drop the plain-text part every other transport keeps.
+      assert.equal(send.options.headers['content-type'], 'text/plain');
+
+      const mime = Buffer.from(send.options.body, 'base64').toString('utf8');
+      assert.match(mime, /multipart\/alternative/);
+      assert.match(mime, /text\/plain/);
+      assert.match(mime, /text\/html/);
+      assert.match(mime, /^To: rehan@sankyu\.example$/m);
+    },
+  );
+});
+
+test('Entra’s own reason for refusing a sign-in survives to the screen', async () => {
+  await withStubbedFetch(
+    () =>
+      new Response(
+        JSON.stringify({
+          error: 'invalid_client',
+          error_description: 'AADSTS7000215: Invalid client secret provided.',
+        }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      ),
+    async () => {
+      const mailer = createMailer(GRAPH_ENV);
+      // "Login failed" would throw away the only part of the answer that says
+      // what to fix — an expired secret reads exactly like a wrong tenant.
+      await assert.rejects(
+        () => mailer.send({ to: 'a@b.com', subject: 's', html: '<p>h</p>', text: 't' }),
+        /AADSTS7000215/,
+      );
+    },
+  );
 });

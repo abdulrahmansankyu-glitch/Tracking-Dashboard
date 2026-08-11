@@ -177,10 +177,25 @@ services:
       # no schedule — better than a trigger anyone who finds the URL can pull.
       - key: TRACKER_REMINDER_SECRET
         sync: false
-      # Who the reminders come from, e.g. "Engineering Tracker <you@gmail.com>".
+      # Who the reminders come from. With Microsoft Graph this must be a real
+      # mailbox, e.g. "Engineering Tracker <engineering@company.com>".
       - key: TRACKER_MAIL_FROM
         sync: false
-      # One transport. For Gmail: smtp.gmail.com, port 587, and an *app
+
+      # One transport.
+      #
+      # For a company Microsoft 365 / Outlook mailbox, use Graph — Microsoft has
+      # been retiring Basic auth for SMTP in Exchange Online, and a mailbox with
+      # MFA generally cannot authenticate over SMTP at all. These three come from
+      # an Entra ID app registration with the Mail.Send *application* permission.
+      - key: TRACKER_GRAPH_TENANT_ID
+        sync: false
+      - key: TRACKER_GRAPH_CLIENT_ID
+        sync: false
+      - key: TRACKER_GRAPH_CLIENT_SECRET
+        sync: false
+
+      # Or plain SMTP. For Gmail: smtp.gmail.com, port 587, and an *app
       # password* — a Google account password will be refused.
       - key: TRACKER_SMTP_HOST
         sync: false

@@ -154,12 +154,55 @@ Set `TRACKER_MAIL_FROM` and one transport:
 
 | Transport | Variables | Worth knowing |
 |---|---|---|
+| **Microsoft Graph** | `TRACKER_GRAPH_TENANT_ID`, `TRACKER_GRAPH_CLIENT_ID`, `TRACKER_GRAPH_CLIENT_SECRET` | For a company Microsoft 365 / Outlook mailbox — see below |
 | **SMTP** | `TRACKER_SMTP_HOST`, `TRACKER_SMTP_PORT`, `TRACKER_SMTP_USER`, `TRACKER_SMTP_PASSWORD` | Gmail works with an **app password**, not the account password. Port 587, or 465 for implicit TLS |
 | **Brevo** | `TRACKER_BREVO_API_KEY` | 300 a day free, and a sender verified by clicking a link — no domain needed |
 | **Resend** | `TRACKER_RESEND_API_KEY` | Wants a verified domain before it will send to anyone but you |
 
 The transport is detected from whichever key is present; `TRACKER_MAIL_PROVIDER`
 overrides that if two are set.
+
+### A company Outlook mailbox
+
+Reach for Graph rather than SMTP. Microsoft has been retiring Basic
+authentication for SMTP in Exchange Online; SMTP AUTH is disabled per-mailbox by
+default and has to be turned on deliberately; and Microsoft 365 has no
+app-password equivalent, so a mailbox with MFA generally cannot authenticate over
+SMTP at all. Graph is the supported route and does not stop working when that
+retirement completes.
+
+It needs an app registration in Entra ID, which usually means asking IT:
+
+1. **Entra ID → App registrations → New registration.** Single tenant. No
+   redirect URI — this app never signs a person in.
+2. **Certificates & secrets → New client secret.** Copy the *Value* immediately;
+   it is not shown again.
+3. **API permissions → Microsoft Graph → Application permissions → `Mail.Send`**,
+   then **Grant admin consent**. Application, not Delegated: the app signs in as
+   itself, so there is no password to rotate when somebody leaves and no mailbox
+   that stops sending when their account is disabled.
+4. **Scope it to one mailbox.** `Mail.Send` as an application permission is
+   tenant-wide by default — it would let this app send as anybody in the company.
+   An application access policy restricts it to the one mailbox:
+
+   ```powershell
+   New-ApplicationAccessPolicy -AppId <client-id> `
+     -PolicyScopeGroupId engineering@company.com `
+     -AccessRight RestrictAccess `
+     -Description "Engineering tracker reminders"
+   ```
+
+   Asking for this up front is usually the difference between the request being
+   approved and being refused.
+
+Then set `TRACKER_MAIL_FROM` to that mailbox — Graph names it in the request
+path, so it has to be a real mailbox rather than any valid address.
+
+Graph's JSON message object carries a single body, which would drop the
+plain-text alternative every other transport keeps, so the assembled MIME message
+is posted instead. Whatever Entra says when it refuses a sign-in is passed
+through unchanged: an expired secret and a wrong tenant ID are indistinguishable
+once flattened into "login failed".
 
 ### The schedule
 
@@ -210,10 +253,10 @@ it uses that instead; the tables are created on boot.
 | `TRACKER_DATA_FILE` | `data/tracker.json` | Where the JSON store lives |
 | `TZ` | host default | The plant's timezone, so "due today" means today locally |
 | `TRACKER_REMINDER_SECRET` | — | Lets the scheduler trigger a reminder run. Unset → no schedule |
-| `TRACKER_MAIL_FROM` · `TRACKER_SMTP_*` · `TRACKER_BREVO_API_KEY` · `TRACKER_RESEND_API_KEY` | — | Reminder email — see above |
+| `TRACKER_MAIL_FROM` · `TRACKER_GRAPH_*` · `TRACKER_SMTP_*` · `TRACKER_BREVO_API_KEY` · `TRACKER_RESEND_API_KEY` | — | Reminder email — see above |
 
 ```bash
-pnpm --filter @intoto/tracker test     # 49 tests, no database needed
+pnpm --filter @intoto/tracker test     # 52 tests, no database needed
 ```
 
 ---
@@ -294,8 +337,8 @@ public/            the browser app — app.js, styles.css, index.html
 src/auth.js        passwords, sessions, roles and register permissions
 src/report.js      the printable Engineering Department Updates sheet
 src/reminders.js   who is reminded about what, and the digest they receive
-src/mailer.js      SMTP, Brevo or Resend behind one send()
-test/              49 tests over the parts that would fail silently
+src/mailer.js      Microsoft Graph, SMTP, Brevo or Resend behind one send()
+test/              52 tests over the parts that would fail silently
 ```
 
 The browser never carries its own copy of the register definitions — it reads them

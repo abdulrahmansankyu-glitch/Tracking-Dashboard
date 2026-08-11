@@ -2002,6 +2002,14 @@ function renderActivity() {
 
 const userDraft = { registers: [] };
 
+/** Transport names as somebody reading the screen would recognise them. */
+const MAIL_PROVIDER_LABELS = {
+  graph: 'Microsoft 365 (Outlook)',
+  smtp: 'SMTP',
+  brevo: 'Brevo',
+  resend: 'Resend',
+};
+
 /**
  * Daily email reminders.
  *
@@ -2082,7 +2090,7 @@ function renderReminders() {
       : h(
           'div',
           { class: 'banner ok', style: 'margin-bottom: 14px' },
-          `Sending through ${data.mail.provider.toUpperCase()} as ${data.mail.from}.`,
+          `Sending through ${MAIL_PROVIDER_LABELS[data.mail.provider] ?? data.mail.provider} as ${data.mail.from}.`,
         ),
 
     data.scheduleConfigured
