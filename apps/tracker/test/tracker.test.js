@@ -33,7 +33,7 @@ import {
   toDateOnly,
   todayIso,
 } from '../src/registers.js';
-import { createMailer } from '../src/mailer.js';
+import { createMailer, explainSmtpFailure } from '../src/mailer.js';
 import {
   bandOf,
   bandsSendingOn,
@@ -1395,4 +1395,31 @@ test('Entra’s own reason for refusing a sign-in survives to the screen', async
       );
     },
   );
+});
+
+test('an SMTP refusal is explained without losing what the server said', () => {
+  // Microsoft answers with the same sentence whether the password is wrong, the
+  // mailbox has SMTP AUTH switched off, or the tenant blocks Basic auth —
+  // three problems with three different fixes, only one of which is worth
+  // retyping a password over.
+  const microsoft = explainSmtpFailure({
+    response:
+      '535 5.7.139 Authentication unsuccessful, the request did not meet the criteria to be authenticated successfully.',
+    code: 'EAUTH',
+  });
+  assert.match(microsoft, /5\.7\.139/, 'the raw answer survives — IT will ask for it');
+  assert.match(microsoft, /SMTP AUTH is switched off|no app-password equivalent/);
+
+  assert.match(
+    explainSmtpFailure({ response: '534-5.7.9 Application-specific password required', code: 'EAUTH' }),
+    /App Password/,
+  );
+  assert.match(
+    explainSmtpFailure({ message: 'connect ETIMEDOUT 40.99.0.1:587', code: 'ETIMEDOUT' }),
+    /587 for STARTTLS/,
+  );
+
+  // Nothing invented for a failure nobody has classified: a confident wrong
+  // explanation costs more than none.
+  assert.equal(explainSmtpFailure({ message: 'Something new' }), 'Something new');
 });

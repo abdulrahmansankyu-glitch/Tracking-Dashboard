@@ -98,13 +98,56 @@ async function sendSmtp(env, from, message) {
       : undefined,
   });
 
-  await transport.sendMail({
-    from,
-    to: message.to,
-    subject: message.subject,
-    text: message.text,
-    html: message.html,
-  });
+  try {
+    await transport.sendMail({
+      from,
+      to: message.to,
+      subject: message.subject,
+      text: message.text,
+      html: message.html,
+    });
+  } catch (error) {
+    throw new Error(explainSmtpFailure(error));
+  }
+}
+
+/**
+ * Say what an SMTP refusal actually means.
+ *
+ * Mail servers answer in codes written for other mail servers. Microsoft's
+ * `535 5.7.139 Authentication unsuccessful, the request did not meet the
+ * criteria to be authenticated successfully` is the same sentence whether the
+ * password is wrong, the mailbox has SMTP AUTH switched off, or the tenant
+ * blocks Basic authentication entirely — three different problems with three
+ * different fixes, and only one of them is worth retyping a password over.
+ *
+ * The server's own words are kept and the explanation added, never substituted:
+ * the raw text is what an IT department will ask for.
+ */
+export function explainSmtpFailure(error) {
+  const raw = String(error?.response ?? error?.message ?? error);
+  const code = String(error?.code ?? '');
+
+  const hint = (() => {
+    if (/5\.7\.139|SmtpClientAuthentication is disabled|5\.7\.30/i.test(raw)) {
+      return 'Microsoft 365 refused the sign-in itself, so the password is probably not the problem. It means one of: SMTP AUTH is switched off for this mailbox (it is off by default), the tenant blocks Basic authentication for SMTP, or the account uses MFA — which SMTP cannot satisfy, and Microsoft 365 has no app-password equivalent. All three need an administrator, or use Microsoft Graph instead.';
+    }
+    if (/5\.7\.57|Client (was )?not authenticated/i.test(raw)) {
+      return 'The server wanted credentials and got none. Check TRACKER_SMTP_USER and TRACKER_SMTP_PASSWORD are both set.';
+    }
+    if (/Application-specific password required|5\.7\.9/i.test(raw)) {
+      return 'Gmail needs an App Password here, not the account password. Google Account → Security → 2-Step Verification → App passwords.';
+    }
+    if (/Username and Password not accepted|5\.7\.8|535/.test(raw) || code === 'EAUTH') {
+      return 'The username or password was rejected. For Gmail this must be an App Password; for Microsoft 365, SMTP AUTH also has to be enabled on the mailbox.';
+    }
+    if (code === 'ETIMEDOUT' || code === 'ESOCKET' || code === 'ECONNREFUSED') {
+      return 'Could not reach the mail server. Check the host and port — 587 for STARTTLS, 465 for implicit TLS. A wrong port typically hangs rather than failing outright.';
+    }
+    return null;
+  })();
+
+  return hint ? `${raw.trim()}\n\n${hint}` : raw.trim();
 }
 
 async function postJson(url, headers, body, provider) {

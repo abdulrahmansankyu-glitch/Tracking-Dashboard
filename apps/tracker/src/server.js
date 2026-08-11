@@ -1074,12 +1074,21 @@ export async function createApp(env = process.env, overrides = {}) {
       const mine = plan.messages.find((m) => m.to === req.user.email.toLowerCase());
       if (!mine) return asError(res, 400, 'Your account is not among the reminder recipients.');
 
-      await mailer.send({
-        to: mine.to,
-        subject: `[Test] ${mine.subject}`,
-        html: mine.html,
-        text: mine.text,
-      });
+      try {
+        await mailer.send({
+          to: mine.to,
+          subject: `[Test] ${mine.subject}`,
+          html: mine.html,
+          text: mine.text,
+        });
+      } catch (failure) {
+        // Answered here rather than handed to `next()`. A mail server's refusal
+        // is the entire result of pressing this button — the generic handler
+        // turned "535 5.7.139, SMTP AUTH is off for this mailbox" into
+        // "Something went wrong on the server", which is the one thing it
+        // cannot afford to say while somebody is trying credentials.
+        return asError(res, 502, String(failure?.message ?? failure));
+      }
       res.json({ ok: true, to: mine.to, counts: mine.counts });
     } catch (error) {
       next(error);

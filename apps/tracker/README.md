@@ -171,6 +171,14 @@ app-password equivalent, so a mailbox with MFA generally cannot authenticate ove
 SMTP at all. Graph is the supported route and does not stop working when that
 retirement completes.
 
+Trying SMTP first is still worth five minutes, because it costs nothing to find
+out. Point `TRACKER_SMTP_HOST` at `smtp.office365.com` on port 587 and press
+**Send a test to me**: if the tenant allows it, it simply works. If it does not,
+Exchange answers `535 5.7.139 Authentication unsuccessful, the request did not
+meet the criteria to be authenticated successfully` — the same sentence for a
+wrong password, a mailbox with SMTP AUTH off, and a tenant blocking Basic auth,
+so the app prints what that actually means alongside it.
+
 It needs an app registration in Entra ID, which usually means asking IT:
 
 1. **Entra ID → App registrations → New registration.** Single tenant. No

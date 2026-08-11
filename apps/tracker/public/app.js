@@ -103,6 +103,7 @@ const state = {
   logo: null, // the report logo, once loaded
   reminders: null, // { config, mail, runs, weekdays } for admins
   reminderPreview: null, // who today's digest would go to, before sending
+  reminderTest: null, // { ok, message } from the last test send — kept on screen
   theme: localStorage.getItem('tracker.theme') ?? 'auto',
   gate: null, // 'setup' | 'login' | 'name' | null
   dashboard: null,
@@ -2202,12 +2203,19 @@ function renderReminders() {
             class: 'btn',
             type: 'button',
             onclick: async () => {
+              state.reminderTest = { ok: null, message: 'Sending…' };
+              render();
               try {
                 const result = await api('/api/reminders/test', { json: {} });
-                toast(`Test sent to ${result.to}.`);
+                state.reminderTest = { ok: true, message: `Test sent to ${result.to}. Check your inbox.` };
               } catch (error) {
-                toast(error.message);
+                // Not a toast. A mail server's refusal runs to several lines,
+                // is the thing you act on, and is what IT will ask you to
+                // forward — none of which survives disappearing after three
+                // seconds.
+                state.reminderTest = { ok: false, message: error.message };
               }
+              render();
             },
           },
           'Send a test to me',
@@ -2242,6 +2250,33 @@ function renderReminders() {
         ),
       ),
     ),
+
+    state.reminderTest
+      ? h(
+          'div',
+          {
+            class: `banner ${state.reminderTest.ok === false ? 'error' : state.reminderTest.ok ? 'ok' : 'info'}`,
+            // `pre-wrap` because a mail server's answer is several lines and
+            // its line breaks are where the meaning is.
+            style: 'margin-top: 14px; white-space: pre-wrap',
+          },
+          state.reminderTest.message,
+          state.reminderTest.ok === false &&
+            h(
+              'button',
+              {
+                class: 'btn ghost',
+                type: 'button',
+                style: 'display: block; margin-top: 10px',
+                onclick: () => {
+                  state.reminderTest = null;
+                  render();
+                },
+              },
+              'Dismiss',
+            ),
+        )
+      : null,
 
     preview &&
       h(
