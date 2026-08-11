@@ -101,6 +101,8 @@ const state = {
   confirmExpires: 0,
   confirmPrompt: null, // { error } while asking
   logo: null, // the report logo, once loaded
+  reminders: null, // { config, mail, runs, weekdays } for admins
+  reminderPreview: null, // who today's digest would go to, before sending
   theme: localStorage.getItem('tracker.theme') ?? 'auto',
   gate: null, // 'setup' | 'login' | 'name' | null
   dashboard: null,
@@ -2001,6 +2003,345 @@ function renderActivity() {
 const userDraft = { registers: [] };
 
 /**
+ * Daily email reminders.
+ *
+ * The schedule itself lives outside this app — a free instance sleeps after
+ * fifteen minutes, so an in-process timer would simply not fire. Something
+ * external calls `/api/reminders/run` each morning; this screen is where the
+ * rules, the recipients and the evidence of what was sent live.
+ *
+ * The mail password is deliberately not here. It is an environment variable on
+ * the host, so it cannot leave in a database backup — this screen can see
+ * whether mail works and say what is missing, but never what the password is.
+ */
+function renderReminders() {
+  const data = state.reminders;
+  if (!data) return null;
+
+  const config = data.config;
+  const save = async (patch, message) => {
+    try {
+      const result = await api('/api/reminders', { method: 'PUT', json: { ...config, ...patch } });
+      state.reminders = { ...data, config: result.config, bandsToday: result.bandsToday };
+      if (message) toast(message);
+      render();
+    } catch (error) {
+      toast(error.message);
+    }
+  };
+
+  const number = (label, key, hint, min, max) =>
+    h(
+      'label',
+      { class: 'field' },
+      h('span', null, label),
+      h('input', {
+        type: 'number',
+        min: String(min),
+        max: String(max),
+        value: String(config[key]),
+        title: hint,
+        onchange: (e) => save({ [key]: Number(e.target.value) }),
+      }),
+    );
+
+  const check = (key, label, hint) =>
+    h(
+      'label',
+      { style: 'display: flex; gap: 9px; align-items: flex-start; cursor: pointer' },
+      h('input', {
+        type: 'checkbox',
+        checked: config[key] ? 'checked' : null,
+        style: 'margin-top: 3px',
+        onchange: (e) => save({ [key]: e.target.checked }),
+      }),
+      h('span', null, label, hint && h('span', { class: 'hint', style: 'display: block' }, hint)),
+    );
+
+  const preview = state.reminderPreview;
+
+  return h(
+    'section',
+    { class: 'card' },
+    h(
+      'header',
+      null,
+      h('h2', null, 'Daily email reminders'),
+      h('span', { class: 'hint' }, config.enabled ? 'on' : 'off'),
+    ),
+
+    // What is missing, in the order it has to be fixed. A screen full of
+    // settings that cannot possibly send is worse than one that says why.
+    !data.mail.configured
+      ? h(
+          'div',
+          { class: 'banner warn', style: 'margin-bottom: 14px' },
+          h('strong', null, 'No mail account is connected yet. '),
+          data.mail.problem,
+        )
+      : h(
+          'div',
+          { class: 'banner ok', style: 'margin-bottom: 14px' },
+          `Sending through ${data.mail.provider.toUpperCase()} as ${data.mail.from}.`,
+        ),
+
+    data.scheduleConfigured
+      ? null
+      : h(
+          'div',
+          { class: 'banner info', style: 'margin-bottom: 14px' },
+          'No schedule secret is set, so nothing can trigger the daily run automatically. Set TRACKER_REMINDER_SECRET on the host to switch the schedule on. You can still send from here.',
+        ),
+
+    h(
+      'div',
+      { style: 'display: flex; flex-direction: column; gap: 14px' },
+      check(
+        'enabled',
+        'Send reminders automatically',
+        'When this is off, the scheduled run does nothing and reminders only go out if you send them from here.',
+      ),
+
+      h(
+        'div',
+        { class: 'toolbar' },
+        number('Remind daily within (days)', 'dailyWithinDays', 'Jobs due this many days from now are emailed every day.', 0, 365),
+        number('Mention jobs up to (days)', 'windowDays', 'Jobs further away than this are not mentioned at all.', 1, 365),
+        h(
+          'label',
+          { class: 'field' },
+          h('span', null, 'Weekly look-ahead on'),
+          h(
+            'select',
+            { onchange: (e) => save({ weeklyOn: e.target.value }) },
+            (data.weekdays ?? []).map((day) =>
+              h('option', { value: day, selected: config.weeklyOn === day }, day),
+            ),
+          ),
+        ),
+      ),
+      h(
+        'p',
+        { class: 'hint', style: 'margin: -4px 0 0' },
+        `Overdue jobs and anything due within ${config.dailyWithinDays} days are emailed every day. Jobs due in ${
+          config.dailyWithinDays + 1
+        }–${config.windowDays} days go out once a week, on ${config.weeklyOn} — daily on those would drown the urgent ones.`,
+      ),
+
+      check('includeOverdue', 'Include jobs that are already overdue'),
+      check(
+        'sendWhenEmpty',
+        'Email people who have nothing due',
+        'Off by default. A digest that arrives every morning saying "nothing" is a digest people stop opening.',
+      ),
+
+      h(
+        'label',
+        { class: 'field' },
+        h('span', null, 'Link back to the tracker'),
+        h('input', {
+          type: 'url',
+          value: config.appUrl ?? '',
+          placeholder: 'https://engineering-tracker.onrender.com',
+          style: 'width: 100%',
+          onchange: (e) => save({ appUrl: e.target.value }, 'Saved.'),
+        }),
+      ),
+
+      h(
+        'label',
+        { class: 'field' },
+        h('span', null, 'Also send to (one address per line)'),
+        h('textarea', {
+          rows: '3',
+          placeholder: 'engineering.dept@company.com',
+          value: (config.extraRecipients ?? []).join('\n'),
+          onchange: (e) =>
+            save(
+              { extraRecipients: e.target.value.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean) },
+              'Saved.',
+            ),
+        }),
+      ),
+      h(
+        'p',
+        { class: 'hint', style: 'margin: -4px 0 0' },
+        'Everyone with an account is emailed already, covering only the registers their account can open. Addresses here have no account, so they receive everything.',
+      ),
+
+      h(
+        'div',
+        { class: 'toolbar' },
+        h(
+          'button',
+          {
+            class: 'btn',
+            type: 'button',
+            onclick: async () => {
+              try {
+                state.reminderPreview = await api('/api/reminders/preview');
+                render();
+              } catch (error) {
+                toast(error.message);
+              }
+            },
+          },
+          'Show who gets one today',
+        ),
+        h(
+          'button',
+          {
+            class: 'btn',
+            type: 'button',
+            onclick: async () => {
+              try {
+                const result = await api('/api/reminders/test', { json: {} });
+                toast(`Test sent to ${result.to}.`);
+              } catch (error) {
+                toast(error.message);
+              }
+            },
+          },
+          'Send a test to me',
+        ),
+        h(
+          'button',
+          {
+            class: 'btn primary',
+            type: 'button',
+            onclick: async () => {
+              if (!confirm("Send today's reminders to the whole team now?")) return;
+              try {
+                // Forced: the admin has just said to send it, so the
+                // already-sent-today guard is not what they meant.
+                const result = await api('/api/reminders/run', { json: { force: true } });
+                toast(
+                  result.sent
+                    ? `Sent ${result.sent} email${result.sent === 1 ? '' : 's'}${
+                        result.failed ? `, ${result.failed} failed` : ''
+                      }.`
+                    : 'Nobody had anything due, so nothing was sent.',
+                );
+                state.reminders = null;
+                state.users = null;
+                render();
+              } catch (error) {
+                toast(error.message);
+              }
+            },
+          },
+          'Send now',
+        ),
+      ),
+    ),
+
+    preview &&
+      h(
+        'div',
+        { style: 'margin-top: 18px' },
+        h(
+          'div',
+          { class: 'nav-label', style: 'padding-left: 0' },
+          `${preview.date} (${preview.weekday}) — ${preview.messages.length} would be emailed`,
+        ),
+        preview.messages.length
+          ? h(
+              'div',
+              { class: 'table-wrap' },
+              h(
+                'table',
+                null,
+                h(
+                  'thead',
+                  null,
+                  h(
+                    'tr',
+                    null,
+                    h('th', null, 'To'),
+                    h('th', null, 'Overdue'),
+                    h('th', null, 'Due soon'),
+                    h('th', null, 'Coming up'),
+                    h('th', null, 'Theirs'),
+                  ),
+                ),
+                h(
+                  'tbody',
+                  null,
+                  preview.messages.map((m) =>
+                    h(
+                      'tr',
+                      { key: m.to },
+                      h('td', null, m.name ? `${m.name} · ${m.to}` : m.to),
+                      h('td', null, String(m.counts.overdue)),
+                      h('td', null, String(m.counts.urgent)),
+                      h('td', null, String(m.counts.soon)),
+                      h('td', null, String(m.counts.mine)),
+                    ),
+                  ),
+                ),
+              ),
+            )
+          : h('p', { class: 'hint' }, 'Nobody has anything due today.'),
+        // A ternary, not `&&`: a length of 0 is falsy but still a value, and
+        // `h()` rendered it as a literal "0" under the buttons.
+        preview.skipped.length
+          ? h(
+              'p',
+              { class: 'hint' },
+              `Not emailed: ${preview.skipped.map((s) => s.name || s.to).join(', ')} — nothing due.`,
+            )
+          : null,
+      ),
+
+    data.runs?.length
+      ? h(
+          'div',
+          { style: 'margin-top: 18px' },
+          h('div', { class: 'nav-label', style: 'padding-left: 0' }, 'Recent runs'),
+          h(
+            'div',
+            { class: 'table-wrap' },
+            h(
+              'table',
+              null,
+              h(
+                'thead',
+                null,
+                h(
+                  'tr',
+                  null,
+                  h('th', null, 'When'),
+                  h('th', null, 'Triggered by'),
+                  h('th', null, 'Sent'),
+                  h('th', null, 'Failed'),
+                ),
+              ),
+              h(
+                'tbody',
+                null,
+                data.runs.map((run) =>
+                  h(
+                    'tr',
+                    { key: run.at },
+                    h('td', null, String(run.at).slice(0, 16).replace('T', ' ')),
+                    h('td', null, run.trigger),
+                    h('td', null, String(run.sent)),
+                    h(
+                      'td',
+                      { style: run.failed ? 'color: var(--critical)' : '' },
+                      run.failed ? String(run.failed) : '—',
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        )
+      : null,
+  );
+}
+
+/**
  * Accounts and what each person may do.
  *
  * Two dimensions, because they answer different questions: the role says what
@@ -2024,6 +2365,15 @@ function renderSettings() {
       .then((data) => {
         state.logo = data.logo || null;
       })
+      .catch(() => {});
+
+    api('/api/reminders')
+      .then((data) => {
+        state.reminders = data;
+        render();
+      })
+      // Not fatal: the offline build has no reminders, and Settings must still
+      // open if this one endpoint is unavailable.
       .catch(() => {});
 
     api('/api/users')
@@ -2313,7 +2663,7 @@ function renderSettings() {
         h(
           'p',
           { class: 'hint', style: 'margin: 0' },
-          'You will need to tell them this password yourself — the app does not send email. They can change it once they are in.',
+          'You will need to tell them this password yourself — the app does not email invitations. They can change it once they are in.',
         ),
         h(
           'div',
@@ -2399,6 +2749,8 @@ function renderSettings() {
         ),
       ),
     ),
+
+    renderReminders(),
 
     h(
       'section',

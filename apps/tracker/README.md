@@ -113,6 +113,81 @@ from the page.
 
 ---
 
+## Daily email reminders
+
+Every morning each person is emailed the jobs that need them, and nobody has to
+open the dashboard to find out that something is late.
+
+**The rule the team asked for**, and what it means in practice:
+
+| Band | Reminded |
+|---|---|
+| Overdue | Every day |
+| Due within 15 days | Every day |
+| Due in 16–30 days | Once a week, on Sunday |
+| Beyond 30 days, or no date set | Not at all |
+
+The middle band is the whole point of the design. Emailing everything inside a
+month every morning would mean the same twenty rows arriving daily for three
+weeks, and a message that always says the same thing stops being read — taking
+the genuinely urgent ones with it. All four thresholds are configurable under
+**Settings → Daily email reminders**.
+
+**Each person's digest is their own.** An account limited to IWS is reminded
+about IWS; the same allow-list that hides PDM in the app keeps PDM out of their
+inbox, or the email would be a way around a permission enforced everywhere else.
+Their own rows lead the message, matched from the free-text `Action By` column
+against their account name, and the rest of the department's position follows —
+a digest showing only your own work hides the fact that the register you share
+is on fire.
+
+Nobody is emailed when they have nothing due.
+
+### Connecting a mail account
+
+Credentials live in the environment, never in the database — a mail password in
+a table leaves in a database backup, and that table sits beside the team's
+records. Settings can see *whether* mail works and say what is missing; it can
+never show or set the password.
+
+Set `TRACKER_MAIL_FROM` and one transport:
+
+| Transport | Variables | Worth knowing |
+|---|---|---|
+| **SMTP** | `TRACKER_SMTP_HOST`, `TRACKER_SMTP_PORT`, `TRACKER_SMTP_USER`, `TRACKER_SMTP_PASSWORD` | Gmail works with an **app password**, not the account password. Port 587, or 465 for implicit TLS |
+| **Brevo** | `TRACKER_BREVO_API_KEY` | 300 a day free, and a sender verified by clicking a link — no domain needed |
+| **Resend** | `TRACKER_RESEND_API_KEY` | Wants a verified domain before it will send to anyone but you |
+
+The transport is detected from whichever key is present; `TRACKER_MAIL_PROVIDER`
+overrides that if two are set.
+
+### The schedule
+
+`POST /api/reminders/run` sends the day's digests. It takes the shared secret in
+an `x-reminder-secret` header, or an admin session with a recent password
+confirmation. With `TRACKER_REMINDER_SECRET` unset the endpoint stays closed to
+unauthenticated callers rather than defaulting to open.
+
+**The schedule cannot live inside the app.** A free instance sleeps after fifteen
+minutes idle, so a timer in the process would not be running at seven in the
+morning — and the first request of the day is what wakes it.
+[`.github/workflows/tracker-reminders.yml`](../../.github/workflows/tracker-reminders.yml)
+is that request: a free GitHub Actions cron that wakes the service, waits for it,
+and then triggers the run. It needs two repository secrets, `TRACKER_URL` and
+`TRACKER_REMINDER_SECRET`.
+
+A run refuses to repeat on a date it has already sent, so a cron that
+double-fires cannot send the team the same digest twice. **Send now** in Settings
+overrides that, because that is what pressing it means.
+
+Set `TZ` on the host to the plant's timezone. "Due today" is otherwise today in
+UTC, and a run just after local midnight would work from yesterday's date.
+
+The offline single-file build has no server and no accounts, so it has no
+reminders either — there is nobody to remind and nothing running to do it.
+
+---
+
 ## Running it
 
 ```bash
@@ -133,9 +208,12 @@ it uses that instead; the tables are created on boot.
 | `TRACKER_SESSION_SECRET` | generated | Signs session tokens. Generated once and stored if unset |
 | `TRACKER_ADMIN_EMAIL` · `TRACKER_ADMIN_PASSWORD` · `TRACKER_ADMIN_NAME` | — | Create the first admin on boot instead of through the setup screen |
 | `TRACKER_DATA_FILE` | `data/tracker.json` | Where the JSON store lives |
+| `TZ` | host default | The plant's timezone, so "due today" means today locally |
+| `TRACKER_REMINDER_SECRET` | — | Lets the scheduler trigger a reminder run. Unset → no schedule |
+| `TRACKER_MAIL_FROM` · `TRACKER_SMTP_*` · `TRACKER_BREVO_API_KEY` · `TRACKER_RESEND_API_KEY` | — | Reminder email — see above |
 
 ```bash
-pnpm --filter @intoto/tracker test     # 40 tests, no database needed
+pnpm --filter @intoto/tracker test     # 49 tests, no database needed
 ```
 
 ---
@@ -215,7 +293,9 @@ src/server.js      the API and the static app, one process
 public/            the browser app — app.js, styles.css, index.html
 src/auth.js        passwords, sessions, roles and register permissions
 src/report.js      the printable Engineering Department Updates sheet
-test/              40 tests over the parts that would fail silently
+src/reminders.js   who is reminded about what, and the digest they receive
+src/mailer.js      SMTP, Brevo or Resend behind one send()
+test/              49 tests over the parts that would fail silently
 ```
 
 The browser never carries its own copy of the register definitions — it reads them

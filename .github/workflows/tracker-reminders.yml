@@ -1,0 +1,88 @@
+# Trigger the tracker's daily reminder run.
+#
+# The schedule has to live outside the app. A free Render instance sleeps after
+# fifteen minutes idle, so a timer inside the process would simply not be
+# running at 07:00 — and the first request of the morning is what wakes it. This
+# workflow is that request, and GitHub Actions runs it for free on a public
+# repository.
+#
+# Two repository secrets are required, under Settings → Secrets and variables →
+# Actions:
+#
+#   TRACKER_URL              https://engineering-tracker.onrender.com
+#   TRACKER_REMINDER_SECRET  the same value set on the Render service
+#
+# Without them the job stops with a clear message rather than failing obscurely.
+
+name: Tracker reminders
+
+on:
+  schedule:
+    # 04:00 UTC — 07:00 in Saudi Arabia, before the shift starts.
+    # GitHub runs scheduled jobs in UTC and gives no local-time option, so this
+    # has to be converted by hand; it also does not observe daylight saving,
+    # which Saudi Arabia does not either.
+    - cron: '0 4 * * *'
+  # So the run can be triggered by hand from the Actions tab without waiting a day.
+  workflow_dispatch:
+
+# Two runs sending the team the same digest twice is worse than a late one, and
+# the server's own same-day guard should not be the only thing preventing it.
+concurrency:
+  group: tracker-reminders
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check the secrets are set
+        env:
+          TRACKER_URL: ${{ secrets.TRACKER_URL }}
+          TRACKER_REMINDER_SECRET: ${{ secrets.TRACKER_REMINDER_SECRET }}
+        run: |
+          if [ -z "$TRACKER_URL" ] || [ -z "$TRACKER_REMINDER_SECRET" ]; then
+            echo "::error::Set the TRACKER_URL and TRACKER_REMINDER_SECRET repository secrets."
+            exit 1
+          fi
+
+      - name: Wake the service
+        env:
+          TRACKER_URL: ${{ secrets.TRACKER_URL }}
+        # A sleeping free instance takes about fifty seconds to start, which is
+        # longer than a default curl timeout. Waking it first — and waiting for
+        # it — keeps the send itself a normal, fast request.
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 30 "$TRACKER_URL/api/health" > /dev/null; then
+              echo "Awake after $attempt attempt(s)."
+              exit 0
+            fi
+            echo "Not up yet (attempt $attempt); waiting 20s."
+            sleep 20
+          done
+          echo "::error::$TRACKER_URL never answered /api/health."
+          exit 1
+
+      - name: Send today's reminders
+        env:
+          TRACKER_URL: ${{ secrets.TRACKER_URL }}
+          TRACKER_REMINDER_SECRET: ${{ secrets.TRACKER_REMINDER_SECRET }}
+        # The secret goes in a header, never the URL: query strings end up in
+        # access logs and in the Actions log itself.
+        run: |
+          response=$(curl -sS --max-time 120 -w '\n%{http_code}' \
+            -X POST "$TRACKER_URL/api/reminders/run" \
+            -H 'content-type: application/json' \
+            -H "x-reminder-secret: $TRACKER_REMINDER_SECRET" \
+            -d '{}')
+
+          body=$(printf '%s' "$response" | sed '$d')
+          status=$(printf '%s' "$response" | tail -n1)
+
+          echo "$body"
+          if [ "$status" != "200" ]; then
+            echo "::error::The tracker answered $status."
+            exit 1
+          fi

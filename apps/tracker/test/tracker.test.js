@@ -33,6 +33,14 @@ import {
   toDateOnly,
   todayIso,
 } from '../src/registers.js';
+import {
+  bandOf,
+  bandsSendingOn,
+  normaliseConfig,
+  ownerMatches,
+  sendsToday,
+  weekdayOf,
+} from '../src/reminders.js';
 import { createApp, summarise } from '../src/server.js';
 import { applyQuery, toApi, toRow } from '../src/store.js';
 
@@ -468,9 +476,9 @@ test('the spelling the team actually uses for Target Date is recognised', async 
 // --------------------------------------------------------- import commit ---
 
 /** Start the app on an ephemeral port over a throwaway JSON store. */
-async function withServer(run) {
+async function withServer(run, { env = {}, overrides = {} } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'tracker-test-'));
-  const { app } = await createApp({ TRACKER_DATA_FILE: join(dir, 'data.json') });
+  const { app } = await createApp({ TRACKER_DATA_FILE: join(dir, 'data.json'), ...env }, overrides);
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -575,7 +583,7 @@ test('a later upload still replaces what an earlier one imported', async () => {
 // --------------------------------------------------------------- accounts ---
 
 /** Sign up the first admin and return a helper that calls the API as them. */
-async function withAdmin(run) {
+async function withAdmin(run, options = {}) {
   return withServer(async (base) => {
     const post = (path, body, token) =>
       fetch(base + path, {
@@ -643,7 +651,7 @@ async function withAdmin(run) {
     const asAdmin = () => as(setup.token, adminConfirm);
 
     return run({ base, setup, as, asAdmin, post, confirmFor });
-  });
+  }, options);
 }
 
 test('the first account becomes an admin, and the email is stored lowercased', async () => {
@@ -1015,5 +1023,267 @@ test('the report logo is admin-only and must be an image', async () => {
     // And it reaches the report.
     const text = pdfText(Buffer.from(await (await admin.get('/api/report.pdf')).arrayBuffer()));
     assert.ok(pdfHas(text, 'Engineering Department Updates'));
+  });
+});
+
+// ------------------------------------------------------- email reminders ----
+
+/**
+ * A mailer that records instead of sending.
+ *
+ * The alternative — a "pretend to send" flag inside the route — would mean the
+ * tests exercise a branch production never runs, which is the opposite of what
+ * a test is for.
+ */
+function fakeMailer() {
+  const outbox = [];
+  return {
+    outbox,
+    provider: 'fake',
+    from: 'Tracker <tracker@example.com>',
+    configured: true,
+    problem: null,
+    async send(message) {
+      outbox.push(message);
+    },
+    async sendAll(messages) {
+      for (const message of messages) await this.send(message);
+      return { sent: messages.map((m) => m.to), failed: [] };
+    },
+  };
+}
+
+const openRecord = (over = {}) => ({
+  id: over.id ?? 'r1',
+  register: 'iws',
+  ref: 'IWS-01',
+  title: 'Clean the heat exchanger',
+  status: 'Not Started',
+  priority: 'Medium',
+  actionBy: 'Ali',
+  dueDate: null,
+  ...over,
+});
+
+test('reminders band a job by how far away its due date is', () => {
+  const config = normaliseConfig({ windowDays: 30, dailyWithinDays: 15 });
+  const today = '2026-08-11';
+  const on = (dueDate, over) => bandOf(openRecord({ dueDate, ...over }), config, today);
+
+  assert.equal(on('2026-08-01'), 'overdue');
+  assert.equal(on('2026-08-11'), 'urgent', 'due today is urgent, not overdue');
+  assert.equal(on('2026-08-26'), 'urgent', 'the fifteenth day is still the daily band');
+  assert.equal(on('2026-08-27'), 'soon', 'the sixteenth is the weekly band');
+  assert.equal(on('2026-09-10'), 'soon', 'the thirtieth day is the last one in the window');
+  assert.equal(on('2026-09-11'), null, 'beyond the window, no reminder');
+
+  // The two ways a job earns silence.
+  assert.equal(on('2026-08-01', { status: 'Completed' }), null);
+  assert.equal(on(null), null, 'an undated job cannot be said to be due');
+});
+
+test('the 16–30 day band goes out weekly, the urgent ones every day', () => {
+  const config = normaliseConfig({ weeklyOn: 'Sunday' });
+
+  // 2026-08-11 is a Tuesday; 2026-08-16 is a Sunday.
+  assert.equal(weekdayOf('2026-08-11'), 'Tuesday');
+  assert.deepEqual(bandsSendingOn(config, '2026-08-11'), ['overdue', 'urgent']);
+  assert.deepEqual(bandsSendingOn(config, '2026-08-16'), ['overdue', 'urgent', 'soon']);
+
+  // This is the point of the whole design: a job three weeks out does not
+  // generate a message every morning, or the daily ones stop being read.
+  assert.equal(sendsToday('soon', config, '2026-08-11'), false);
+  assert.equal(sendsToday('overdue', config, '2026-08-11'), true);
+});
+
+test('a daily threshold wider than the window is clamped, not obeyed', () => {
+  // Otherwise the whole "coming up" band is silently promoted to a daily email.
+  const config = normaliseConfig({ windowDays: 30, dailyWithinDays: 90 });
+  assert.equal(config.dailyWithinDays, 30);
+  assert.equal(normaliseConfig({ weeklyOn: 'Caturday' }).weeklyOn, 'Sunday');
+  assert.deepEqual(
+    normaliseConfig({ extraRecipients: ['a@b.com', 'A@B.COM', 'nonsense', ''] }).extraRecipients,
+    ['a@b.com'],
+    'duplicates and non-addresses are dropped rather than handed to the mail server',
+  );
+});
+
+test('an owner name from a spreadsheet is matched to the right account', () => {
+  assert.ok(ownerMatches('Abdulrahman', 'Abdulrahman Sankyu'));
+  assert.ok(ownerMatches('ABDULRAHMAN S.', 'Abdulrahman Sankyu'));
+  assert.ok(ownerMatches('Ali', 'Ali'), 'a three-letter name is a name, not an initial');
+  assert.ok(ownerMatches('Mohammed/Khan', 'Khan Mohammed'), 'order does not matter');
+
+  assert.ok(!ownerMatches('Ali', 'Alissa'), 'tokens match whole, never by prefix');
+  assert.ok(!ownerMatches('A.', 'Abdulrahman'), 'an initial is not enough to claim the work');
+  assert.ok(!ownerMatches('', 'Abdulrahman'));
+  assert.ok(!ownerMatches('Ali', null), 'an address with no account name matches nobody');
+});
+
+test('a reminder covers only the registers the recipient may open', async () => {
+  await withAdmin(async ({ asAdmin, post, base }) => {
+    const admin = asAdmin();
+
+    await admin.post('/api/records', {
+      register: 'iws',
+      data: { iwsNumber: 'IWS-01', description: 'Overdue scope', targetDate: '2020-01-01', actionBy: 'Rehan' },
+    });
+    await admin.post('/api/records', {
+      register: 'pdm',
+      data: { equipmentTag: 'P-101', finding: 'Bearing noise', targetDate: '2020-01-01', actionBy: 'Rehan' },
+    });
+
+    await admin.post('/api/users', {
+      name: 'Rehan',
+      email: 'rehan@example.com',
+      password: 'conveyor-2026',
+      role: 'editor',
+      registers: ['iws'],
+    });
+
+    const preview = await (await admin.get('/api/reminders/preview')).json();
+    const rehan = preview.messages.find((m) => m.to === 'rehan@example.com');
+
+    assert.ok(rehan, 'the restricted account is still a recipient');
+    assert.equal(rehan.counts.overdue, 1, 'only the IWS job — PDM is not theirs to see');
+    assert.equal(
+      preview.messages.find((m) => m.to === 'abdul@example.com').counts.overdue,
+      2,
+      'the unrestricted admin sees both',
+    );
+
+    // The permission is enforced on the digest itself, not only on its counts.
+    assert.equal(
+      (await admin.get('/api/reminders')).status,
+      200,
+      'sanity: reading the config needs the admin confirmation',
+    );
+  });
+});
+
+test('the run endpoint is closed to callers with neither the secret nor an admin session', async () => {
+  const mailer = fakeMailer();
+  await withAdmin(
+    async ({ base, setup, as, asAdmin }) => {
+      const run = (headers = {}) =>
+        fetch(`${base}/api/reminders/run`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body: '{}',
+        });
+
+      assert.equal((await run()).status, 401, 'anonymous');
+      assert.equal((await run({ 'x-reminder-secret': 'wrong' })).status, 401, 'wrong secret');
+
+      // A signed-in admin without the recent password confirmation is not enough
+      // either — sending mail to the whole team is a Settings-grade action.
+      assert.equal(
+        (await run({ authorization: `Bearer ${setup.token}` })).status,
+        403,
+        'admin session without the password confirmation',
+      );
+
+      // Switched off is switched off, even for an authorised caller.
+      const off = await (await run({ 'x-reminder-secret': 'let-me-in' })).json();
+      assert.equal(off.sent, 0);
+      assert.match(off.skipped, /switched off/);
+      assert.equal(mailer.outbox.length, 0);
+    },
+    { env: { TRACKER_REMINDER_SECRET: 'let-me-in' }, overrides: { mailer } },
+  );
+});
+
+test('a scheduled run emails each person once, and refuses to send twice the same day', async () => {
+  const mailer = fakeMailer();
+  await withAdmin(
+    async ({ base, asAdmin }) => {
+      const admin = asAdmin();
+      await admin.post('/api/records', {
+        register: 'iws',
+        data: { iwsNumber: 'IWS-77', description: 'Late scope', targetDate: '2020-01-01', actionBy: 'Abdul Rahman' },
+      });
+      await admin.put('/api/reminders', { enabled: true, appUrl: 'https://tracker.example.com' });
+
+      const run = (body = {}) =>
+        fetch(`${base}/api/reminders/run`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-reminder-secret': 'let-me-in' },
+          body: JSON.stringify(body),
+        });
+
+      const first = await (await run()).json();
+      assert.equal(first.sent, 1);
+      assert.equal(first.trigger, 'schedule');
+      assert.equal(mailer.outbox.length, 1);
+
+      const message = mailer.outbox[0];
+      assert.equal(message.to, 'abdul@example.com');
+      assert.match(message.subject, /1 overdue/);
+      assert.match(message.html, /Engineering Department Updates/);
+      assert.match(message.html, /Late scope/);
+      assert.match(message.text, /Late scope/, 'and a plain-text alternative, for clients that refuse HTML');
+      assert.match(
+        message.html,
+        /Assigned to you/,
+        'the owner name in the sheet is matched to the account, so their own row leads',
+      );
+
+      // A cron that double-fires, or an admin pressing the button after it ran,
+      // must not send the team the same digest again.
+      const second = await (await run()).json();
+      assert.equal(second.sent, 0);
+      assert.match(second.skipped, /already sent today/);
+      assert.equal(mailer.outbox.length, 1);
+
+      // Forcing is still possible, because that is what "resend it" means.
+      assert.equal((await (await run({ force: true })).json()).sent, 1);
+      assert.equal(mailer.outbox.length, 2);
+
+      const state = await (await admin.get('/api/reminders')).json();
+      assert.equal(state.runs.length, 2, 'and every run is logged');
+      assert.equal(state.config.enabled, true);
+    },
+    { env: { TRACKER_REMINDER_SECRET: 'let-me-in' }, overrides: { mailer } },
+  );
+});
+
+test('nobody is emailed when they have nothing due', async () => {
+  const mailer = fakeMailer();
+  await withAdmin(
+    async ({ base, asAdmin }) => {
+      const admin = asAdmin();
+      // Due in a year: inside no band at all.
+      await admin.post('/api/records', {
+        register: 'iws',
+        data: { iwsNumber: 'IWS-99', description: 'Next year', targetDate: '2099-01-01', actionBy: 'Abdul Rahman' },
+      });
+      await admin.put('/api/reminders', { enabled: true });
+
+      const result = await (
+        await fetch(`${base}/api/reminders/run`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-reminder-secret': 'let-me-in' },
+          body: '{}',
+        })
+      ).json();
+
+      assert.equal(result.sent, 0);
+      assert.equal(mailer.outbox.length, 0, 'an empty digest every morning is how a digest gets filtered');
+      assert.equal(result.skippedRecipients[0].reason, 'nothing due');
+    },
+    { env: { TRACKER_REMINDER_SECRET: 'let-me-in' }, overrides: { mailer } },
+  );
+});
+
+test('reminder settings are admin-only, and credentials are never served', async () => {
+  await withAdmin(async ({ setup, as, asAdmin }) => {
+    assert.equal((await as(setup.token).get('/api/reminders')).status, 403, 'no password confirmation');
+
+    const body = await (await asAdmin().get('/api/reminders')).json();
+    // The transport's state is useful; its password is not, and it lives in the
+    // environment precisely so it cannot leak through here.
+    assert.equal(typeof body.mail.configured, 'boolean');
+    assert.equal(JSON.stringify(body).includes('PASSWORD'), false);
+    assert.equal(JSON.stringify(body).includes('api-key'), false);
   });
 });

@@ -38,6 +38,14 @@ import {
 } from './auth.js';
 import { buildWorkbook, inspectWorkbook, readSheet } from './excel.js';
 import { buildReport } from './report.js';
+import { createMailer } from './mailer.js';
+import {
+  DEFAULT_REMINDER_CONFIG,
+  WEEKDAYS,
+  bandsSendingOn,
+  normaliseConfig,
+  planRun,
+} from './reminders.js';
 import { sanitiseData, summarise } from './query.js';
 import {
   AREA_OPTIONS,
@@ -99,9 +107,23 @@ function sanitiseRegisters(input) {
   return [...new Set(input.filter((id) => known.has(id)))];
 }
 
-export async function createApp(env = process.env) {
+export async function createApp(env = process.env, overrides = {}) {
   const store = await createStore(env);
+  // Overridable so the reminder tests can assert on what would have been sent
+  // without an SMTP server, and without a "pretend to send" branch inside the
+  // route that production would then be running a variant of.
+  const mailer = overrides.mailer ?? createMailer(env);
   const app = express();
+
+  /**
+   * The shared secret the scheduler presents to trigger a reminder run.
+   *
+   * The run endpoint cannot use a session: it is called by a cron job with no
+   * browser and no password. Without a secret set, the endpoint stays closed to
+   * unauthenticated callers rather than defaulting to open — an open trigger is
+   * a way for anyone who finds the URL to email the whole team.
+   */
+  const reminderSecret = String(env.TRACKER_REMINDER_SECRET ?? '').trim();
 
   app.disable('x-powered-by');
   app.use(express.json({ limit: '5mb' }));
@@ -240,8 +262,15 @@ export async function createApp(env = process.env) {
       registers: REGISTERS.length,
       // Named capabilities rather than a version string: this answers "is the
       // thing I just deployed actually running?" without anyone reading a log.
-      features: ['accounts', 'register-permissions', 'settings-password-confirm'],
+      features: [
+        'accounts',
+        'register-permissions',
+        'settings-password-confirm',
+        'pdf-report',
+        'email-reminders',
+      ],
       accounts: await store.countUsers(),
+      mail: mailer.provider,
     });
   });
 
@@ -908,6 +937,225 @@ export async function createApp(env = process.env) {
     }
   });
 
+  // ---- Email reminders ----------------------------------------------------
+
+  const loadReminderConfig = async () => {
+    const raw = await store.getSetting('reminder_config');
+    try {
+      return normaliseConfig(raw ? JSON.parse(raw) : {});
+    } catch {
+      // Unparseable settings must not stop the app booting or the cron running;
+      // the defaults are safe because `enabled` is false among them.
+      return normaliseConfig({});
+    }
+  };
+
+  const loadRuns = async () => {
+    const raw = await store.getSetting('reminder_runs');
+    try {
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  /** Newest first, and only the last twenty — this is a log, not an archive. */
+  const recordRun = async (entry) => {
+    const runs = [entry, ...(await loadRuns())].slice(0, 20);
+    await store.setSetting('reminder_runs', JSON.stringify(runs));
+    return runs;
+  };
+
+  /**
+   * What would be sent today.
+   *
+   * Every reminder path goes through this — the preview, the scheduled run and
+   * the manual run alike — so what the Settings screen shows is the computation
+   * that sends, rather than a second implementation that can drift from it.
+   */
+  const buildPlan = async (config, today) =>
+    planRun({
+      records: await store.all(null),
+      users: (await store.listUsers()).map(toUserApi),
+      config,
+      today,
+    });
+
+  /** Config, plus the transport's state — never its credentials. */
+  app.get('/api/reminders', requireAccess('manage'), async (_req, res, next) => {
+    try {
+      const config = await loadReminderConfig();
+      res.json({
+        config,
+        weekdays: WEEKDAYS,
+        defaults: DEFAULT_REMINDER_CONFIG,
+        bandsToday: bandsSendingOn(config),
+        mail: {
+          provider: mailer.provider,
+          configured: mailer.configured,
+          from: mailer.from || null,
+          problem: mailer.problem,
+        },
+        scheduleConfigured: Boolean(reminderSecret),
+        runs: await loadRuns(),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put('/api/reminders', requireAccess('manage'), async (req, res, next) => {
+    try {
+      const config = normaliseConfig({ ...(await loadReminderConfig()), ...(req.body ?? {}) });
+      await store.setSetting('reminder_config', JSON.stringify(config));
+      await store.logActivity({
+        id: randomUUID(),
+        at: new Date().toISOString(),
+        actor: actorOf(req),
+        action: 'reminders',
+        register: null,
+        recordId: null,
+        summary: config.enabled ? 'Turned daily reminders on' : 'Turned daily reminders off',
+        detail: config,
+      });
+      res.json({ ok: true, config, bandsToday: bandsSendingOn(config) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * Exactly who would be emailed, and what each of them would get.
+   *
+   * `?date=` lets an admin ask "what goes out on Sunday?" without waiting for
+   * Sunday — the weekly band is invisible on any other day, so without it the
+   * feature cannot be checked on the day it is set up.
+   */
+  app.get('/api/reminders/preview', requireAccess('manage'), async (req, res, next) => {
+    try {
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date ?? ''))
+        ? String(req.query.date)
+        : undefined;
+      const plan = await buildPlan(await loadReminderConfig(), date);
+      res.json({
+        date: plan.date,
+        weekday: plan.weekday,
+        bands: plan.bands,
+        recipients: plan.recipients,
+        skipped: plan.skipped,
+        // The bodies are megabytes across a whole team; the preview needs the
+        // shape of each message, and one sample to look at.
+        messages: plan.messages.map(({ to, name, kind, counts, subject, registers }) => ({
+          to,
+          name,
+          kind,
+          counts,
+          subject,
+          registers,
+        })),
+        sample: plan.messages[0]?.html ?? null,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /** One digest to the admin asking, whatever the schedule says — a smoke test. */
+  app.post('/api/reminders/test', requireAccess('manage'), async (req, res, next) => {
+    try {
+      if (!mailer.configured) return asError(res, 400, mailer.problem);
+      if (!req.user?.email) return asError(res, 400, 'Your account has no email address.');
+
+      const config = await loadReminderConfig();
+      // Forced on, so a test does not silently do nothing on a day when nothing
+      // is due — "no email arrived" would be indistinguishable from a failure.
+      const plan = await buildPlan({ ...config, sendWhenEmpty: true });
+      const mine = plan.messages.find((m) => m.to === req.user.email.toLowerCase());
+      if (!mine) return asError(res, 400, 'Your account is not among the reminder recipients.');
+
+      await mailer.send({
+        to: mine.to,
+        subject: `[Test] ${mine.subject}`,
+        html: mine.html,
+        text: mine.text,
+      });
+      res.json({ ok: true, to: mine.to, counts: mine.counts });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * Send today's reminders.
+   *
+   * Called by the scheduler with the shared secret, or by an admin from
+   * Settings. It is a POST because it sends mail — a GET would be run by every
+   * link-preview crawler that ever saw the URL.
+   *
+   * Refuses to run twice on the same date unless forced, since a cron that
+   * double-fires, or an admin pressing the button after the schedule already
+   * ran, would otherwise send the team the same digest again.
+   */
+  app.post('/api/reminders/run', async (req, res, next) => {
+    try {
+      const presented = String(req.get('x-reminder-secret') ?? '').trim();
+      const bySecret = Boolean(reminderSecret) && presented === reminderSecret;
+
+      if (!bySecret) {
+        if (presented) return asError(res, 401, 'Wrong reminder secret.');
+        if (!req.user || !can(req.user, 'manage')) {
+          return asError(res, 401, 'This endpoint needs the reminder secret, or an admin session.');
+        }
+        if (verifyToken(req.get('x-confirm-token'), sessionSecret, 'confirm') !== req.user.id) {
+          return res.status(403).json({ error: 'Confirm your password first.', needsConfirmation: true });
+        }
+      }
+
+      const config = await loadReminderConfig();
+      if (!config.enabled && !req.body?.force) {
+        return res.json({ ok: true, skipped: 'reminders are switched off', sent: 0 });
+      }
+      if (!mailer.configured) return asError(res, 400, mailer.problem);
+
+      const plan = await buildPlan(config);
+      const runs = await loadRuns();
+      if (!req.body?.force && runs.some((r) => r.date === plan.date && r.sent > 0)) {
+        return res.json({ ok: true, skipped: 'already sent today', date: plan.date, sent: 0 });
+      }
+
+      const { sent, failed } = await mailer.sendAll(plan.messages);
+      const entry = {
+        at: new Date().toISOString(),
+        date: plan.date,
+        weekday: plan.weekday,
+        bands: plan.bands,
+        trigger: bySecret ? 'schedule' : (req.user?.name ?? 'manual'),
+        sent: sent.length,
+        failed: failed.length,
+        recipients: sent,
+        errors: failed.slice(0, 5),
+      };
+      await recordRun(entry);
+      await store.logActivity({
+        id: randomUUID(),
+        at: entry.at,
+        actor: entry.trigger,
+        action: 'reminders',
+        register: null,
+        recordId: null,
+        summary: `Sent ${sent.length} reminder email${sent.length === 1 ? '' : 's'}${
+          failed.length ? `, ${failed.length} failed` : ''
+        }`,
+        detail: entry,
+      });
+
+      res.json({ ok: true, ...entry, skippedRecipients: plan.skipped });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ---- Excel export -------------------------------------------------------
 
   app.get('/api/export', requireAccess('read'), async (req, res, next) => {
@@ -1004,7 +1252,7 @@ export async function createApp(env = process.env) {
     res.status(500).json({ error: 'Something went wrong on the server.' });
   });
 
-  return { app, store };
+  return { app, store, mailer };
 }
 
 // Started directly (not imported by a test), so `node src/server.js` just works.

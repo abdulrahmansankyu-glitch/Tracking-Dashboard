@@ -161,3 +161,32 @@ services:
       # private — with no code, anyone holding the link can read and edit the data.
       - key: TRACKER_ACCESS_CODE
         sync: false
+
+      # The team's clock, so "due today" means today on the plant rather than in
+      # UTC. Without it a reminder run just after midnight local time would be
+      # working from yesterday's date.
+      - key: TZ
+        value: Asia/Riyadh
+
+      # --- Daily email reminders -------------------------------------------
+      #
+      # All optional: with none of them set the app runs exactly as before and
+      # the Settings screen says what is missing.
+      #
+      # The shared secret the scheduler presents to trigger a run. Unset means
+      # no schedule — better than a trigger anyone who finds the URL can pull.
+      - key: TRACKER_REMINDER_SECRET
+        sync: false
+      # Who the reminders come from, e.g. "Engineering Tracker <you@gmail.com>".
+      - key: TRACKER_MAIL_FROM
+        sync: false
+      # One transport. For Gmail: smtp.gmail.com, port 587, and an *app
+      # password* — a Google account password will be refused.
+      - key: TRACKER_SMTP_HOST
+        sync: false
+      - key: TRACKER_SMTP_PORT
+        sync: false
+      - key: TRACKER_SMTP_USER
+        sync: false
+      - key: TRACKER_SMTP_PASSWORD
+        sync: false
