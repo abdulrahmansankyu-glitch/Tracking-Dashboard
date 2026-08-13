@@ -38,6 +38,7 @@ import {
 } from './auth.js';
 import { buildWorkbook, inspectWorkbook, readSheet } from './excel.js';
 import { buildReport } from './report.js';
+import { nextRef } from './autonumber.js';
 import { createMailer } from './mailer.js';
 import {
   DEFAULT_REMINDER_CONFIG,
@@ -558,15 +559,32 @@ export async function createApp(env = process.env, overrides = {}) {
       if (!Object.keys(data).length) return asError(res, 400, 'Fill in at least one field.');
 
       const actor = actorOf(req);
-      const row = toRow({
-        register: register.id,
-        data,
-        derived: deriveRecord(register, data),
-        source: 'manual',
-        actor,
+
+      /**
+       * Issue the number inside the same turn as the insert.
+       *
+       * The form shows the next number when it opens, but that is a preview,
+       * not a reservation — somebody else may have saved in between. So the
+       * number is worked out again here unless the person typed their own,
+       * which the form reports by clearing `autoRef`.
+       */
+      const auto = register.autoNumber;
+      const wantsAuto =
+        auto && (req.body?.autoRef === true || !String(data[auto.field] ?? '').trim());
+
+      const row = await allocateRef(async () => {
+        if (wantsAuto) data[auto.field] = await suggestRef(register);
+        const built = toRow({
+          register: register.id,
+          data,
+          derived: deriveRecord(register, data),
+          source: 'manual',
+          actor,
+        });
+        await store.insertMany([built]);
+        return built;
       });
 
-      await store.insertMany([row]);
       const saved = await store.get(row.id);
 
       await store.logActivity({
@@ -932,6 +950,54 @@ export async function createApp(env = process.env, overrides = {}) {
 
       await store.setSetting('report_logo', logo);
       res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ---- Reference numbers --------------------------------------------------
+
+  /**
+   * Work out the next reference for a register that issues its own.
+   *
+   * Reads what has actually been stored rather than keeping a counter, so a row
+   * imported from the sheet with a higher number is taken into account and the
+   * app cannot drift out of step with the workbook.
+   */
+  const suggestRef = async (register, period) => {
+    const rows = await store.all(register.id);
+    const field = register.autoNumber.field;
+    return nextRef(
+      rows.map((row) => row.data?.[field]).filter(Boolean),
+      { prefix: register.autoNumber.prefix, ...(period ? { period } : {}) },
+    );
+  };
+
+  /**
+   * Allocation is serialised, one at a time.
+   *
+   * "Read the highest, add one, insert" is a race: two people pressing Save in
+   * the same second both read 18 and both write 19. Chaining the allocations
+   * means the second read happens after the first insert has landed.
+   *
+   * This holds because the app runs as a single process. If it is ever scaled
+   * to more than one instance, this needs a unique index on the number and a
+   * retry — a promise chain cannot see across processes.
+   */
+  let refQueue = Promise.resolve();
+  const allocateRef = (task) => {
+    const result = refQueue.then(task, task);
+    // Kept from rejecting so one failed allocation does not poison the queue.
+    refQueue = result.catch(() => {});
+    return result;
+  };
+
+  app.get('/api/registers/:id/next-ref', requireAccess('write'), async (req, res, next) => {
+    try {
+      const register = getRegister(req.params.id);
+      if (!register?.autoNumber) return asError(res, 400, 'That register does not issue its own numbers.');
+      if (!allowRegister(req, res, register.id)) return;
+      res.json({ ref: await suggestRef(register), field: register.autoNumber.field });
     } catch (error) {
       next(error);
     }

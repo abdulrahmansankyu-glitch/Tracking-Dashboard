@@ -1322,9 +1322,40 @@ function openNew(registerId) {
     registerId,
     isNew: true,
     draft: {},
+    // Whether the reference shown is still the one the app suggested. Cleared
+    // the moment somebody types in that field, which is how the server knows to
+    // honour what they wrote instead of issuing a number of its own.
+    autoRef: false,
   };
   render();
+
+  // Shown as soon as the form opens, but it is a preview rather than a
+  // reservation — the number is issued for real when Save is pressed, so
+  // opening the form and thinking better of it does not consume one and leave
+  // a gap in the sequence.
+  const register = registerById(registerId);
+  if (!register?.autoNumber) return;
+
+  api(`/api/registers/${registerId}/next-ref`)
+    .then(({ ref, field }) => {
+      const drawer = state.drawer;
+      // The form may have been closed, or another one opened, while this was
+      // in flight.
+      if (!drawer?.isNew || drawer.registerId !== registerId) return;
+      if (drawer.draft[field]) return; // they typed faster than the network
+      drawer.draft[field] = ref;
+      drawer.autoRef = true;
+      render();
+    })
+    // A failure here costs the convenience, not the entry: the field stays
+    // empty and can be filled in by hand.
+    .catch(() => {});
 }
+
+const AUTO_REF_HINTS = {
+  auto: 'Numbered automatically — the serial restarts each month. Type over it to use your own.',
+  manual: 'Using the number you typed instead of the automatic one.',
+};
 
 function renderDrawer() {
   const { record, registerId, isNew, draft } = state.drawer;
@@ -1334,15 +1365,25 @@ function renderDrawer() {
   const valueOf = (key) => (key in draft ? draft[key] : (record.data?.[key] ?? ''));
 
   const fieldInput = (field) => {
+    const write = (e) => {
+      draft[field.key] = e.target.value;
+      // Typing over an issued number means they want their own. From here the
+      // server honours what is in the box rather than allocating.
+      if (register.autoNumber?.field === field.key) {
+        state.drawer.autoRef = false;
+        // Updated in place rather than by re-rendering: re-rendering the field
+        // somebody is typing in takes the cursor with it. Without this the hint
+        // went on claiming the number was automatic after they had replaced it.
+        const note = $(`#hint-${field.key}`);
+        if (note) note.textContent = AUTO_REF_HINTS.manual;
+      }
+    };
+
     const common = {
       id: `f-${field.key}`,
       value: valueOf(field.key),
-      oninput: (e) => {
-        draft[field.key] = e.target.value;
-      },
-      onchange: (e) => {
-        draft[field.key] = e.target.value;
-      },
+      oninput: write,
+      onchange: write,
     };
 
     if (field.type === 'longtext') return h('textarea', common);
@@ -1393,8 +1434,12 @@ function renderDrawer() {
     try {
       const payload = isNew ? { ...(record.data ?? {}), ...draft } : draft;
       if (isNew) {
-        await api('/api/records', { json: { register: registerId, data: payload } });
-        toast('Entry added.');
+        const created = await api('/api/records', {
+          json: { register: registerId, data: payload, autoRef: state.drawer.autoRef === true },
+        });
+        // The number the server actually issued, which may not be the one
+        // previewed if somebody else saved in the meantime.
+        toast(created?.ref ? `Added ${created.ref}.` : 'Entry added.');
       } else {
         await api(`/api/records/${record.id}`, { method: 'PATCH', json: { data: payload } });
         toast('Saved.');
@@ -1468,7 +1513,21 @@ function renderDrawer() {
           ),
 
         register.fields.map((field) =>
-          h('label', { class: 'field' }, h('span', null, field.label), fieldInput(field)),
+          h(
+            'label',
+            { class: 'field' },
+            h('span', null, field.label),
+            fieldInput(field),
+            // Said once, on the field it applies to: the number is chosen for
+            // them, and typing over it is allowed rather than a mistake.
+            isNew && register.autoNumber?.field === field.key
+              ? h(
+                  'span',
+                  { class: 'hint', id: `hint-${field.key}` },
+                  state.drawer.autoRef ? AUTO_REF_HINTS.auto : AUTO_REF_HINTS.manual,
+                )
+              : null,
+          ),
         ),
 
         extraKeys.length > 0 &&

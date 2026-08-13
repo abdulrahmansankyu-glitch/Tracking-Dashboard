@@ -202,6 +202,14 @@ export const REGISTERS = [
   {
     id: 'action-notice',
     name: 'Action Notice',
+    /**
+     * Document numbers the app issues: `PA-2607-09`.
+     *
+     * `PA` fixed, then the year and month, then a serial restarting at 01 each
+     * month. Only entries created by hand in the app are numbered — an imported
+     * sheet keeps whatever numbers it already carries.
+     */
+    autoNumber: { field: 'documentNo', prefix: 'PA' },
     short: 'AN',
     description: 'Engineering action notices raised on plant equipment.',
     // Both uploaded workbooks title this sheet "Sheet1", so name-matching alone
@@ -753,5 +761,7 @@ export function registerCatalogue() {
     fields: r.fields,
     tableColumns: r.tableColumns,
     roles: r.roles,
+    // So the form knows to ask for a number and to label the field as automatic.
+    autoNumber: r.autoNumber ?? null,
   }));
 }

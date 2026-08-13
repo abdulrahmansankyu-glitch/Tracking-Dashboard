@@ -33,6 +33,7 @@ import {
   toDateOnly,
   todayIso,
 } from '../src/registers.js';
+import { nextRef, periodOf } from '../src/autonumber.js';
 import { createMailer, explainSmtpFailure } from '../src/mailer.js';
 import {
   bandOf,
@@ -1538,4 +1539,100 @@ test('QC rows carry no due date, and are counted as undated rather than late', (
   assert.equal(derived.status, 'In Progress');
   assert.equal(derived.priority, 'High', 'Execution is the sheet’s only urgency signal');
   assert.equal(dueState(derived.dueDate, derived.status), 'undated');
+});
+
+// -------------------------------------------------- Action Notice numbers ---
+
+test('the next document number follows the month and restarts with it', () => {
+  assert.equal(periodOf(new Date(2026, 7, 13)), '2608');
+  assert.equal(periodOf(new Date(2026, 0, 1)), '2601', 'January is 01, not 1');
+
+  // The real sheet, which runs PA-2607-01 to PA-2607-18.
+  const july = ['PA-2607-01', 'PA-2607-18', 'PA-2607-09'];
+  assert.equal(nextRef(july, { prefix: 'PA', period: '2607' }), 'PA-2607-19');
+
+  // A new month starts again at 01 however many the last one held.
+  assert.equal(nextRef(july, { prefix: 'PA', period: '2608' }), 'PA-2608-01');
+  assert.equal(nextRef([], { prefix: 'PA', period: '2608' }), 'PA-2608-01');
+
+  // Highest plus one, never the count: deleting an entry must not hand its
+  // number to the next one, because it is already on paperwork that has left
+  // the building.
+  assert.equal(nextRef(['PA-2608-01', 'PA-2608-05'], { prefix: 'PA', period: '2608' }), 'PA-2608-06');
+
+  // Two digits, but not capped at two.
+  assert.equal(nextRef(['PA-2608-99'], { prefix: 'PA', period: '2608' }), 'PA-2608-100');
+
+  // Anything that is not one of ours is ignored rather than miscounted.
+  assert.equal(nextRef(['IWS-2021-004', '', null, 'PA-26-9'], { prefix: 'PA', period: '2608' }), 'PA-2608-01');
+});
+
+test('two people saving at once cannot be given the same document number', async () => {
+  await withServer(async (base) => {
+    const create = (description) =>
+      fetch(`${base}/api/records`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ register: 'action-notice', autoRef: true, data: { description } }),
+      }).then((r) => r.json());
+
+    // Fired together, the way two people pressing Save in the same second
+    // arrive. "Read the highest, add one, insert" is a race: without
+    // serialising the allocation, every one of these reads the same highest
+    // number and writes the same new one. Against Postgres, where the insert
+    // has to round-trip before another read can see it, all ten came back as
+    // PA-...-01.
+    const made = await Promise.all(Array.from({ length: 10 }, (_, i) => create(`Concurrent ${i}`)));
+    const refs = made.map((r) => r.ref);
+
+    assert.equal(new Set(refs).size, 10, 'every notice gets its own number');
+    assert.deepEqual(
+      [...refs].sort(),
+      Array.from({ length: 10 }, (_, i) => `PA-${periodOf()}-${String(i + 1).padStart(2, '0')}`),
+      'and they run consecutively from 01',
+    );
+  });
+});
+
+test('a number typed by hand is kept, and an imported one is never renumbered', async () => {
+  await withServer(async (base) => {
+    const post = (body) =>
+      fetch(`${base}/api/records`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then((r) => r.json());
+
+    // Someone types their own — the app must not overrule it.
+    const typed = await post({
+      register: 'action-notice',
+      autoRef: false,
+      data: { documentNo: 'PA-2512-42', description: 'Carried over from last year' },
+    });
+    assert.equal(typed.ref, 'PA-2512-42');
+
+    // And an out-of-period number does not disturb the current month's count.
+    const next = await post({ register: 'action-notice', autoRef: true, data: { description: 'New one' } });
+    assert.equal(next.ref, `PA-${periodOf()}-01`);
+
+    // A register that does not issue numbers is left alone.
+    const iws = await post({ register: 'iws', data: { description: 'A scope' } });
+    assert.equal(iws.ref, null);
+  });
+});
+
+test('the form is offered the next number before anyone commits to it', async () => {
+  await withServer(async (base) => {
+    const preview = await (await fetch(`${base}/api/registers/action-notice/next-ref`)).json();
+    assert.equal(preview.ref, `PA-${periodOf()}-01`);
+    assert.equal(preview.field, 'documentNo');
+
+    // Asking twice hands out the same number: it is a preview, not a
+    // reservation, so opening the form and closing it again leaves no gap.
+    const again = await (await fetch(`${base}/api/registers/action-notice/next-ref`)).json();
+    assert.equal(again.ref, preview.ref);
+
+    const refused = await fetch(`${base}/api/registers/iws/next-ref`);
+    assert.equal(refused.status, 400, 'IWS numbers come from the sheet, not from us');
+  });
 });

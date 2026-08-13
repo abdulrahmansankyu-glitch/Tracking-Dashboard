@@ -48,6 +48,40 @@ each register, and the table sorts on any column.
 
 ---
 
+## Document numbers
+
+Action Notices are numbered by the app: **`PA-2608-01`** — `PA`, the two-digit
+year, the two-digit month, then a serial that **restarts at 01 each month**.
+
+Opening a new entry fills the field in. It is still a normal field: type over it
+and the app uses what you wrote, which is what carrying a number over from
+another series requires. Imported rows keep whatever numbers the sheet already
+carries; only entries created by hand are numbered.
+
+Two details that are not obvious and both matter:
+
+**The number shown is a preview, not a reservation.** It is issued for real when
+Save is pressed. Opening the form and thinking better of it therefore consumes
+nothing and leaves no gap in the sequence.
+
+**The server allocates it, never the browser.** "Read the highest, add one,
+insert" is a race, and it is not theoretical: with a database round trip between
+the read and the insert, ten notices saved at the same moment all came back as
+`PA-2608-01`. Allocations are chained so the next read happens after the previous
+insert has landed. This holds because the app runs as a single process — if it is
+ever scaled past one instance, this needs a unique index and a retry instead, and
+a promise chain cannot see across processes.
+
+The next serial is the highest issued this month plus one, never the count of
+records: counting would reissue a number as soon as an entry was deleted, and
+these appear on paperwork that has already left the building. Past 99 the number
+simply gets longer.
+
+Adding this to another register is two lines — an `autoNumber: { field, prefix }`
+on it in [`src/registers.js`](src/registers.js).
+
+---
+
 ## Excel import
 
 Upload a workbook and **every sheet becomes its own choice**. For each one you pick
@@ -302,7 +336,7 @@ it uses that instead; the tables are created on boot.
 | `TRACKER_MAIL_FROM` · `TRACKER_GRAPH_*` · `TRACKER_SMTP_*` · `TRACKER_BREVO_API_KEY` · `TRACKER_RESEND_API_KEY` | — | Reminder email — see above |
 
 ```bash
-pnpm --filter @intoto/tracker test     # 58 tests, no database needed
+pnpm --filter @intoto/tracker test     # 62 tests, no database needed
 ```
 
 ---
@@ -382,9 +416,10 @@ src/server.js      the API and the static app, one process
 public/            the browser app — app.js, styles.css, index.html
 src/auth.js        passwords, sessions, roles and register permissions
 src/report.js      the printable Engineering Department Updates sheet
+src/autonumber.js  the PA-YYMM-NN rule for Action Notice document numbers
 src/reminders.js   who is reminded about what, and the digest they receive
 src/mailer.js      Microsoft Graph, SMTP, Brevo or Resend behind one send()
-test/              58 tests over the parts that would fail silently
+test/              62 tests over the parts that would fail silently
 ```
 
 The browser never carries its own copy of the register definitions — it reads them
