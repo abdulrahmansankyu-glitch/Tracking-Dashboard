@@ -248,7 +248,19 @@ function cell(register, record, field) {
   const roles = register.roles;
   const raw = record.data?.[field.key];
 
-  if (field.key === roles.priority) return h('td', null, priorityChip(record.priority));
+  // The normalised value, and underneath it the word the sheet actually used
+  // when they differ. QC's "Finding Classification" reads `Execution`, which
+  // becomes High — showing only "High" in a column headed Finding
+  // Classification looks like the wrong data rather than a derived one. The
+  // same goes for PDM's `Alarm` and IWS's `P1`.
+  if (field.key === roles.priority) {
+    return h(
+      'td',
+      null,
+      priorityChip(record.priority),
+      raw && String(raw) !== record.priority ? h('div', { class: 'hint' }, String(raw)) : null,
+    );
+  }
 
   if (field.key === roles.status) {
     return h('td', null, record.status, raw && record.status !== raw ? h('div', { class: 'hint' }, raw) : null);
@@ -265,6 +277,9 @@ function cell(register, record, field) {
   }
 
   if (field.type === 'number') return h('td', { class: 'num' }, String(raw));
+
+  // Stored as a whole number of percent, so the sign belongs with it.
+  if (field.type === 'percent') return h('td', { class: 'num' }, `${raw}%`);
 
   if (field.key === roles.ref) return h('td', null, h('span', { class: 'cell-ref' }, String(raw)));
 
@@ -1263,7 +1278,7 @@ function renderRegister() {
                   h('th', { class: 'num' }, '#'),
                   columns.map((field) =>
                     sortHeader(field.label, sortKeyFor(field.key), {
-                      class: field.type === 'number' ? 'num' : '',
+                      class: field.type === 'number' || field.type === 'percent' ? 'num' : '',
                     }),
                   ),
                   sortHeader('Updated', 'updatedAt'),
@@ -1365,7 +1380,9 @@ function renderDrawer() {
         : h('input', { ...common, type: 'text' });
     }
 
-    if (field.type === 'number') return h('input', { ...common, type: 'number' });
+    if (field.type === 'number' || field.type === 'percent') {
+      return h('input', { ...common, type: 'number' });
+    }
 
     return h('input', { ...common, type: 'text' });
   };

@@ -1423,3 +1423,119 @@ test('an SMTP refusal is explained without losing what the server said', () => {
   // explanation costs more than none.
   assert.equal(explainSmtpFailure({ message: 'Something new' }), 'Something new');
 });
+
+// ------------------------------------------------------------- QC report ----
+
+const QC_HEADERS = [
+  'Week',
+  'Date',
+  'Work Order No.',
+  'PM/CM',
+  'Equipment Tag no.',
+  'Maint. Work Center',
+  'Quality Overall %',
+  'Audit Findings',
+  'Finding Classification',
+  'Y8/SCR',
+  'Status',
+  'Detail of the works',
+];
+
+const qcRow = (over = []) =>
+  [2, new Date(Date.UTC(2026, 0, 3)), 830000547612, 'PM', '162-S-0116', 'A8-SK-ME', 0.9,
+   'NO ISSUE FOUND FROM THERE', 'N/A', 'N/A', 'Found normal', 'MONTHLY PM WORK ON THE PASTILLATOR']
+    .map((v, i) => (over[i] === undefined ? v : over[i]));
+
+test('the QC sheet is recognised by its columns, not its name', async () => {
+  // The real file's only sheet is called "Sheet1", same as two other workbooks.
+  const sheet = await sheetFrom([QC_HEADERS, qcRow()], { name: 'Sheet1' });
+  assert.equal(suggestRegister(sheet).register.id, 'qc');
+});
+
+test('QC’s sentences are read as statuses instead of defaulting to Not Started', () => {
+  // All sixteen distinct values in the 850-row file. None matches an alias
+  // exactly, so without phrase matching every row reads as never begun.
+  const completed = [
+    'Found normal',
+    'JOB COMPLETED',
+    'job completed',
+    'Job Completed.',
+    'jOB COMPLETED',
+    'ALREADY INSTALLED',
+    'NEW PRIMARY SCRAPPER  INSTALLED',
+    'ALREDY REPLACED MATERIALS & STEEL BELT WELDING WORK DONE',
+    'NOTIFICATION ALREADY DONE',
+    'Attended on dated 5th june-2026.',
+  ];
+  const outstanding = ['To be attend', 'TO be attend', 'REQUESTED FOR THE MATERIALS', 'NOTIFICATION TO BE MADE'];
+
+  for (const value of completed) assert.equal(normaliseStatus(value), 'Completed', value);
+  for (const value of outstanding) assert.equal(normaliseStatus(value), 'In Progress', value);
+
+  // Outstanding phrases are tested first, because a sentence can hold both and
+  // reading "TO BE DONE" as finished is the more expensive mistake.
+  assert.equal(normaliseStatus('TO BE DONE'), 'In Progress');
+  assert.equal(normaliseStatus('Not completed'), 'In Progress');
+
+  // The registers that do use a proper vocabulary are untouched — an exact
+  // match is taken before any phrase is considered.
+  assert.equal(normaliseStatus('Not started'), 'Not Started');
+  assert.equal(normaliseStatus('Close'), 'Completed');
+  assert.equal(normaliseStatus('On Hold'), 'On Hold');
+});
+
+test('a quality column formatted as a percentage is stored as one', async () => {
+  const sheet = await sheetFrom([
+    QC_HEADERS,
+    qcRow([, , , , , , 0.9]),
+    qcRow([, , 830000548524, , , , 0.88]),
+    // A sheet that stores a plain 88 rather than Excel's 0.88 must not become 8800%.
+    qcRow([, , 830000548525, , , , 88]),
+  ]);
+
+  const { rows } = extractRows(sheet, getRegister('qc'));
+  assert.deepEqual(rows.map((r) => r.qualityPercent), [90, 88, 88]);
+});
+
+test('a stray total below the data is not imported as an audit', async () => {
+  // The real file ends with a lone 0.89 and three SUM/AVERAGE formulas in the
+  // quality column — a running total somebody left underneath. Each satisfied
+  // "some field is filled" and would have become an audit with no work order,
+  // no equipment and no findings.
+  const sheet = await sheetFrom([
+    QC_HEADERS,
+    qcRow(),
+    ['', '', '', '', '', '', 0.89],
+    ['', '', '', '', '', '', 755.89],
+  ]);
+
+  const { rows, skipped } = extractRows(sheet, getRegister('qc'));
+  assert.equal(rows.length, 1, 'only the real audit');
+  assert.equal(skipped, 2, 'and the reader says it passed two rows over');
+  assert.equal(rows[0].workOrderNo, '830000547612');
+});
+
+test('QC rows carry no due date, and are counted as undated rather than late', () => {
+  // This register records audits that already happened; the sheet has no target
+  // date at all. Inventing one from the audit date would park 850 permanently
+  // overdue rows at the top of every dashboard and in everybody's inbox.
+  const register = getRegister('qc');
+  assert.equal(register.roles.due, 'targetDate');
+  assert.ok(
+    register.fields.some((f) => f.key === 'targetDate'),
+    'the field exists so that adding the column to the sheet is all it takes',
+  );
+
+  const derived = deriveRecord(register, {
+    workOrderNo: '830000547612',
+    date: '2026-01-03',
+    actionStatus: 'To be attend',
+    findingClassification: 'Execution',
+    workDetail: 'MONTHLY PM WORK',
+  });
+
+  assert.equal(derived.dueDate, null);
+  assert.equal(derived.status, 'In Progress');
+  assert.equal(derived.priority, 'High', 'Execution is the sheet’s only urgency signal');
+  assert.equal(dueState(derived.dueDate, derived.status), 'undated');
+});

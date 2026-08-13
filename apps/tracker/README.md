@@ -1,6 +1,6 @@
 # Engineering Activity Tracker
 
-Shared daily tracking for engineering jobs across seven registers, with the team's
+Shared daily tracking for engineering jobs across eight registers, with the team's
 Excel workbooks as the way data goes in and comes out.
 
 Everyone opens the **same URL** and sees the **same live data**. When someone
@@ -20,6 +20,7 @@ refresh — no emailing workbooks around to find out which copy is current.
 | Routine Inspection | Recurring routines by interval | Next Inspec Date |
 | CTS Recommendation | Recommendations from CTS investigations | ETC |
 | PDM | Predictive maintenance findings (VA, OA) | Target Date |
+| QC Report | Quality audits of completed work orders | — (see below) |
 
 Each register keeps **its own columns** — an IWS row really is not a PDM row, and
 flattening them would lose the Notification and WO numbers, the calibration dates
@@ -28,7 +29,7 @@ and the vibration findings that make each sheet worth keeping.
 What makes one dashboard possible is that every register declares which of its own
 columns answers each shared question: *what is this, who owns it, when is it due,
 how urgent is it.* That mapping lives in one place —
-[`src/registers.js`](src/registers.js) — and adding an eighth register is a change
+[`src/registers.js`](src/registers.js) — and adding a ninth register is a change
 to that file and nothing else.
 
 ---
@@ -70,8 +71,45 @@ The reader is built around the team's real files rather than an idealised table:
   where a five-year addition wrapped. Accepting them would park permanently overdue
   rows at the top of every dashboard, so they are kept as text and left undated.
 
-Sheet names alone never decide a register — both uploaded workbooks contain a sheet
-called `Sheet1`. Columns decide; the name only breaks a tie.
+Sheet names alone never decide a register — three of the uploaded workbooks contain
+a sheet called `Sheet1`. Columns decide; the name only breaks a tie.
+
+### QC is shaped differently, and it matters
+
+The other seven registers track work that is *going to* happen, so each has a
+target date. A QC row records an audit that has **already** happened, and the
+workbook has no due-date column at all.
+
+So QC rows never appear in Overdue, in Due-in-30-days, or in a reminder email.
+They are counted as undated, which is the honest answer — deriving a due date
+from the audit date would park hundreds of permanently overdue rows at the top of
+every dashboard and in everybody's inbox. The `Target Date` and `Action By`
+fields are declared anyway: the day those columns are added to the sheet, QC
+joins the overdue counts and the reminders with no change to the code.
+
+Three things about that sheet were worth handling explicitly:
+
+- **The status column holds sentences, not statuses.** Sixteen distinct values
+  across 850 rows — `Found normal`, `To be attend`, `REQUESTED FOR THE
+  MATERIALS`, and `job completed` in six capitalisations. None matches a known
+  status word, so all 850 would have defaulted to *Not Started* and the register
+  would have read as 850 jobs nobody had begun. Phrases are matched when the
+  whole cell is not a known word, testing "still outstanding" before "finished"
+  — a sentence can hold both, and reading `TO BE DONE` as done is the more
+  expensive mistake. The seven registers that do use a proper vocabulary are
+  matched exactly and never reach it.
+- **`Quality Overall %` is an Excel percentage**, so 90% is stored as `0.9`.
+  Anything at or below 1 is scaled to a whole percent; anything above is taken as
+  already being one, so a sheet holding a plain `90` reads correctly too.
+- **A running total sat below the data** — one lone `0.89` and three
+  `SUM`/`AVERAGE` formulas, the last at row 1,048,568. Each satisfied "some field
+  is filled" and would have imported as an audit with no work order and no
+  findings. A number alone no longer makes a record; something has to name it.
+
+`Finding Classification` is the only urgency signal the sheet carries —
+`Execution` means the audit found work to do — so it fills the priority role. The
+table shows the derived priority with the sheet's own word beneath it, rather
+than replacing `Execution` with `High`.
 
 ## Excel export
 
@@ -264,7 +302,7 @@ it uses that instead; the tables are created on boot.
 | `TRACKER_MAIL_FROM` · `TRACKER_GRAPH_*` · `TRACKER_SMTP_*` · `TRACKER_BREVO_API_KEY` · `TRACKER_RESEND_API_KEY` | — | Reminder email — see above |
 
 ```bash
-pnpm --filter @intoto/tracker test     # 52 tests, no database needed
+pnpm --filter @intoto/tracker test     # 58 tests, no database needed
 ```
 
 ---
@@ -337,7 +375,7 @@ Plain ES modules, no build step and no framework, on both sides. The file in the
 repository is the file that runs: open `public/app.js`, change it, reload.
 
 ```
-src/registers.js   the seven registers, and how each maps onto the shared shape
+src/registers.js   the eight registers, and how each maps onto the shared shape
 src/excel.js       reading real workbooks; writing ones that read back in
 src/store.js       Postgres or a JSON file, behind one interface
 src/server.js      the API and the static app, one process
@@ -346,7 +384,7 @@ src/auth.js        passwords, sessions, roles and register permissions
 src/report.js      the printable Engineering Department Updates sheet
 src/reminders.js   who is reminded about what, and the digest they receive
 src/mailer.js      Microsoft Graph, SMTP, Brevo or Resend behind one send()
-test/              52 tests over the parts that would fail silently
+test/              58 tests over the parts that would fail silently
 ```
 
 The browser never carries its own copy of the register definitions — it reads them

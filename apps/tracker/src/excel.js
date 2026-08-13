@@ -224,7 +224,10 @@ export async function inspectWorkbook(buffer) {
 
     sheets.push({
       name: worksheet.name,
-      rowCount: worksheet.rowCount ?? 0,
+      // `actualRowCount` counts rows holding something; `rowCount` is the last
+      // row Excel has touched, which on the QC sheet is 1,048,568 because of a
+      // stray AVERAGE left at the bottom of the column.
+      rowCount: worksheet.actualRowCount ?? worksheet.rowCount ?? 0,
       suggestedRegister: register.id,
       suggestedRegisterName: register.name,
       confidence: header.matched,
@@ -257,17 +260,29 @@ export function extractRows(worksheet, register, header = null) {
   const rows = [];
   const issues = [];
   let skipped = 0;
+  let pendingSkipped = 0;
 
   const lastRow = worksheet.rowCount ?? 0;
   for (let rowNumber = detected.rowNumber + 1; rowNumber <= lastRow; rowNumber += 1) {
     const row = worksheet.getRow(rowNumber);
+
+    // Wholly empty rows are held back rather than counted, and the tally is
+    // discarded if nothing follows them.
+    //
+    // `rowCount` is the last row Excel has touched, not the last row with data:
+    // the QC sheet's stray AVERAGE sits at row 1,048,568, so counting these
+    // directly reported "846 imported, 1,047,717 blank rows skipped". A gap
+    // inside the data is worth mentioning; the empty million past the end of it
+    // is not.
     if (!row || !row.cellCount) {
-      skipped += 1;
+      pendingSkipped += 1;
       continue;
     }
 
     const data = {};
     let hasValue = false;
+    // Whether anything identifying this as a job was found — see below.
+    let hasIdentity = false;
 
     for (const [colNumber, column] of detected.columnMap) {
       const raw = asTrimmedString(row.getCell(colNumber).value);
@@ -283,6 +298,11 @@ export function extractRows(worksheet, register, header = null) {
       } else if (type === 'number') {
         const n = Number(raw);
         value = Number.isFinite(n) ? n : String(raw);
+      } else if (type === 'percent') {
+        // Excel's `0%` format stores 90% as 0.9. Anything above 1 is already a
+        // percentage — so a sheet holding a plain 90 is read correctly too.
+        const n = Number(raw);
+        value = Number.isFinite(n) ? (n > 0 && n <= 1 ? Math.round(n * 1000) / 10 : n) : String(raw);
       } else if (raw instanceof Date) {
         value = toDateOnly(raw) ?? raw.toISOString().slice(0, 10);
       } else {
@@ -292,6 +312,15 @@ export function extractRows(worksheet, register, header = null) {
       if (value === null || value === '') continue;
       data[column.field] = value;
       hasValue = true;
+      // A number on its own never makes a job.
+      //
+      // The QC workbook ends with four rows carrying nothing but a SUM and two
+      // AVERAGEs in the quality column — a running total somebody left below
+      // the data. Every one of them satisfied "some field is filled" and would
+      // have imported as an audit with no work order, no equipment and no
+      // findings. A real record always names something: a work order, a tag, a
+      // description, a date.
+      if (type !== 'number' && type !== 'percent') hasIdentity = true;
     }
 
     // Unrecognised columns ride along under their sheet heading.
@@ -302,13 +331,20 @@ export function extractRows(worksheet, register, header = null) {
       if (!value) continue;
       data[`extra:${label}`] = value;
       hasValue = true;
+      hasIdentity = true;
     }
 
-    if (!hasValue) {
+    // A row that held something and was still rejected always counts. That is
+    // the number worth reporting — the Action Notice sheet's dozen rows holding
+    // only a serial number, the QC sheet's four stray totals. Somebody should
+    // be told those were passed over.
+    if (!hasValue || !hasIdentity) {
       skipped += 1;
       continue;
     }
 
+    skipped += pendingSkipped;
+    pendingSkipped = 0;
     rows.push(data);
   }
 
@@ -360,7 +396,7 @@ const COMPUTED_COLUMNS = [
 function widthFor(field) {
   if (field.type === 'longtext') return 46;
   if (field.type === 'date') return 14;
-  if (field.type === 'number') return 12;
+  if (field.type === 'number' || field.type === 'percent') return 12;
   return 20;
 }
 

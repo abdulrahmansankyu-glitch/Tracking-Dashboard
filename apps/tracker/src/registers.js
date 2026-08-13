@@ -58,6 +58,12 @@ const PRIORITY_ALIASES = new Map(
     red: 'Critical',
     alarm: 'High',
     high: 'High',
+    // QC's "Finding Classification": `Execution` means the audit found work
+    // that has to be done, `N/A` means it did not. It is the only urgency
+    // signal that sheet carries. `N/A` is deliberately not mapped — it falls to
+    // the default rather than claiming a clean audit is low *priority*, which
+    // would be a judgement the sheet never made.
+    execution: 'High',
     orange: 'Medium',
     suspect: 'Medium',
     medium: 'Medium',
@@ -121,16 +127,62 @@ export function normalisePriority(value) {
   return PRIORITY_ALIASES.get(key) ?? null;
 }
 
+/**
+ * Phrases that decide a status when the whole cell is not a known word.
+ *
+ * The QC sheet does not hold a status vocabulary — it holds sentences. Sixteen
+ * distinct ones across 850 rows: `Found normal`, `To be attend`, `TO be
+ * attend`, `REQUESTED FOR THE MATERIALS`, `NOTIFICATION ALREADY DONE`, and
+ * `job completed` in six different capitalisations. None of them matches an
+ * alias exactly, so every one of those rows would default to Not Started and
+ * the register would read as 850 jobs nobody had begun.
+ *
+ * Outstanding phrases are tested first, because a sentence can hold both: `TO
+ * BE DONE` contains "done", and reading that as finished would be the more
+ * expensive mistake of the two.
+ */
+const STATUS_PHRASES = [
+  // Still outstanding.
+  [/\bnot(completed|done|attended|closed)/, 'In Progress'],
+  [/tobe(attend|made|done|completed|carried|actioned)?/, 'In Progress'],
+  [/(requested|awaiting|underprocess|inhand|willbe|yettobe|pendingfor)/, 'In Progress'],
+  // Finished.
+  [/(completed|complete|done|installed|replaced|rectified|attended|closed|finished)/, 'Completed'],
+  // The audit looked and found nothing — there is no work, so there is nothing
+  // left open. This is 743 of the 850 rows.
+  [/(foundnormal|noissue|noabnormal|normalcondition|satisfactory)/, 'Completed'],
+];
+
 export function normaliseStatus(value) {
   const key = normaliseKey(value);
   if (!key) return null;
-  return STATUS_ALIASES.get(key) ?? null;
+
+  // An exact match always wins, so the seven registers that do use a proper
+  // status vocabulary never reach the phrase matching below.
+  const exact = STATUS_ALIASES.get(key);
+  if (exact) return exact;
+
+  for (const [pattern, status] of STATUS_PHRASES) {
+    if (pattern.test(key)) return status;
+  }
+  return null;
 }
 
 const text = (key, label, aliases = []) => ({ key, label, type: 'text', aliases });
 const longtext = (key, label, aliases = []) => ({ key, label, type: 'longtext', aliases });
 const date = (key, label, aliases = []) => ({ key, label, type: 'date', aliases });
 const number = (key, label, aliases = []) => ({ key, label, type: 'number', aliases });
+
+/**
+ * A number Excel stores as a fraction and shows as a percentage.
+ *
+ * The QC sheet's "Quality Overall %" column is formatted `0%`, so a cell reading
+ * 90% holds 0.9. Storing that verbatim would print `0.9` in a column headed with
+ * a percent sign, which reads as nine-tenths of one percent. Anything at or
+ * below 1 is therefore scaled; anything above is already a percentage and is
+ * left alone, so a sheet that stores plain 90 works too.
+ */
+const percent = (key, label, aliases = []) => ({ key, label, type: 'percent', aliases });
 /**
  * The two plants this team covers. Area is a choice rather than free text so the
  * dashboard can group by it — typing "SHP " once and "SHP" the next time would
@@ -430,6 +482,119 @@ export const REGISTERS = [
       status: 'status',
       actionBy: 'actionBy',
       location: 'equipmentTag',
+    },
+  },
+
+  /**
+   * QC — quality audits of completed maintenance work orders.
+   *
+   * This register is shaped differently from the other seven, and the difference
+   * matters. The rest track work that is *going to* happen and therefore have a
+   * target date; a QC row records an audit that has *already* happened, and the
+   * uploaded sheet has no due-date column at all. `targetDate` and `actionBy`
+   * below are declared anyway and are simply empty until the team adds those
+   * columns — the day they do, QC rows join the overdue counts and the reminder
+   * emails with no change here.
+   *
+   * The urgency signal the sheet does carry is `Finding Classification`:
+   * `Execution` means the audit found something needing work, `N/A` means it did
+   * not. That is what fills the priority role.
+   */
+  {
+    id: 'qc',
+    name: 'QC Report',
+    short: 'QC',
+    description: 'Quality audits of completed maintenance work orders.',
+    sheetAliases: ['qc', 'qc report', 'quality', 'quality report', 'quality audit', 'qa'],
+    tableColumns: [
+      'workOrderNo',
+      'date',
+      'equipmentTag',
+      'workCenter',
+      'qualityPercent',
+      'findingClassification',
+      'auditFindings',
+      'actionStatus',
+    ],
+    fields: [
+      number('week', 'Week', ['week', 'week no', 'wk']),
+      date('date', 'Date', ['date', 'audit date', 'qc date', 'inspection date']),
+      // Text, not a number: a twelve-digit work order is an identifier, and
+      // nothing good comes of letting it be arithmetic.
+      text('workOrderNo', 'Work Order No.', [
+        'work order no',
+        'work order',
+        'wo no',
+        'wo number',
+        'wo',
+        'order no',
+      ]),
+      select('maintType', 'PM/CM', ['PM', 'CM'], ['pm cm', 'pmcm', 'maint type', 'maintenance type']),
+      text('equipmentTag', 'Equipment Tag no.', [
+        'equipment tag no',
+        'equipment tag',
+        'equipment',
+        'tag no',
+        'tag',
+      ]),
+      text('workCenter', 'Maint. Work Center', [
+        'maint work center',
+        'maintenance work center',
+        'work center',
+        'workcenter',
+        'work centre',
+      ]),
+      percent('qualityPercent', 'Quality %', [
+        'quality overall',
+        'quality overall %',
+        'quality %',
+        'quality',
+        'overall quality',
+      ]),
+      longtext('auditFindings', 'Audit Findings', [
+        'audit findings',
+        'audit finding',
+        'findings',
+        'finding',
+        'observation',
+      ]),
+      select(
+        'findingClassification',
+        'Finding Classification',
+        ['Execution', 'N/A'],
+        ['finding classification', 'classification', 'finding class'],
+      ),
+      text('notification', 'Y8/SCR', ['y8 scr', 'y8/scr', 'y8', 'scr', 'notification no', 'notification']),
+      // Free text in the sheet — "Found normal", "To be attend", six spellings
+      // of "job completed". Kept verbatim; the derived status is what the
+      // dashboard counts, and `normaliseStatus` is what reads this.
+      text('actionStatus', 'Status', ['status', 'action status', 'current status']),
+      longtext('workDetail', 'Detail of the works', [
+        'detail of the works',
+        'details of the works',
+        'detail of work',
+        'work detail',
+        'details',
+        'detail',
+      ]),
+
+      // Not in today's sheet. Declared so that adding either column to the
+      // workbook is all it takes for QC to appear in the overdue counts and in
+      // somebody's reminder email.
+      date('targetDate', 'Target Date', ['target date', 'due date', 'targate date', 'completion date']),
+      text('actionBy', 'Action By', ['action by', 'responsible', 'owner', 'attended by']),
+      longtext('remarks', 'Remarks', ['remarks', 'comment', 'notes']),
+    ],
+    roles: {
+      ref: 'workOrderNo',
+      title: 'workDetail',
+      due: 'targetDate',
+      issued: 'date',
+      status: 'actionStatus',
+      priority: 'findingClassification',
+      actionBy: 'actionBy',
+      location: 'equipmentTag',
+      discipline: 'workCenter',
     },
   },
 ];
