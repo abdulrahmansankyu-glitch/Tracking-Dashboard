@@ -810,18 +810,6 @@ function renderSidebar() {
       h('span', { class: 'grow' }, 'Dashboard'),
     ),
 
-    h(
-      'button',
-      {
-        class: 'nav-item',
-        'aria-current': String(state.view === 'rota'),
-        onclick: () => go('rota'),
-        title: 'Safety KPI, walkthrough and weekend duties',
-      },
-      h('span', { class: 'short' }, '☰'),
-      h('span', { class: 'grow' }, 'Duty rota'),
-    ),
-
     h('div', { class: 'nav-label' }, 'Registers'),
     myRegisters().map((register) => {
       const stat = counts.get(register.id);
@@ -843,6 +831,19 @@ function renderSidebar() {
         ),
       );
     }),
+
+    h('div', { class: 'nav-label' }, 'Rota'),
+    h(
+      'button',
+      {
+        class: 'nav-item',
+        'aria-current': String(state.view === 'rota'),
+        onclick: () => go('rota'),
+        title: 'Safety KPI, walkthrough and weekend duties',
+      },
+      h('span', { class: 'short' }, '☰'),
+      h('span', { class: 'grow' }, 'Duty rota'),
+    ),
 
     h('div', { class: 'nav-label' }, 'Data'),
     canWrite() &&
