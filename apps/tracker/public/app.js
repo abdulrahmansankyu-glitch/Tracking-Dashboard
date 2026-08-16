@@ -1428,14 +1428,48 @@ function renderDrawer() {
     }
 
     if (field.type === 'date') {
-      // The date column may legitimately hold a phrase ("Next Shutdown"), so a
-      // plain date picker would refuse the team's own vocabulary. A date input is
-      // offered when the value is a date, with a text escape hatch beside it.
+      // A date column may legitimately hold a phrase — "Next Shutdown" is two of
+      // the eight ETCs in the real Action Notice sheet. So the picker is what
+      // you get, and typing a phrase stays possible rather than being refused.
+      //
+      // The input follows the value: a stored phrase opens as a text box, so
+      // editing an old row never silently discards what it says. An empty field
+      // opens as a picker, which is what somebody entering a date expects.
       const raw = String(valueOf(field.key) ?? '');
-      const isDate = /^\d{4}-\d{2}-\d{2}$/.test(raw) || raw === '';
-      return isDate
-        ? h('input', { ...common, type: 'date' })
-        : h('input', { ...common, type: 'text' });
+      const looksLikeDate = /^\d{4}-\d{2}-\d{2}$/.test(raw) || raw === '';
+      const forcedText = state.drawer.textFields?.[field.key] === true;
+      const asText = forcedText || !looksLikeDate;
+
+      // Offered on the register's own due field, where the phrases actually
+      // occur, and whenever the box is already text so there is always a way
+      // back to the picker. Every other date field is just a date.
+      const offerToggle = register.roles?.due === field.key || asText;
+
+      return [
+        h('input', {
+          ...common,
+          type: asText ? 'text' : 'date',
+          placeholder: asText ? 'e.g. Next Shutdown' : null,
+        }),
+        offerToggle
+          ? h(
+              'button',
+              {
+                type: 'button',
+                class: 'linkish',
+                onclick: () => {
+                  state.drawer.textFields = { ...(state.drawer.textFields ?? {}) };
+                  state.drawer.textFields[field.key] = !asText;
+                  // Clear a value the other input cannot hold, rather than
+                  // leaving a date picker showing blank over a stored phrase.
+                  if (asText) draft[field.key] = looksLikeDate ? raw : '';
+                  render();
+                },
+              },
+              asText ? 'Use the date picker' : 'Enter text instead',
+            )
+          : null,
+      ];
     }
 
     if (field.type === 'number' || field.type === 'percent') {

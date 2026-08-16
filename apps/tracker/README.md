@@ -147,6 +147,11 @@ The reader is built around the team's real files rather than an idealised table:
 - **Unknown columns are kept**, not dropped, and are editable in the app.
 - **Phrases in date columns survive.** `Next Shutdown` and `SEP` are real, deliberate
   entries. They are kept and shown; the job simply has no calendar date behind it.
+  In the form a due date is a date picker, with an **Enter text instead** switch
+  beside it for those phrases — and a row that already holds one opens as a text
+  box, so editing it cannot silently discard what it says. `Next Inspec Date` on
+  Routine Inspection stays a plain text box: every value in that column is a
+  month name, so a picker there would be the wrong default.
 - **Impossible dates are refused.** The EIS sheet holds several `1935-03-25` values
   where a five-year addition wrapped. Accepting them would park permanently overdue
   rows at the top of every dashboard, so they are kept as text and left undated.

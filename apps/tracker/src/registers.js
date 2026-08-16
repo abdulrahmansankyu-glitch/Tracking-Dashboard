@@ -227,7 +227,11 @@ export const REGISTERS = [
       longtext('description', 'Description', ['description', 'work description']),
       text('location', 'Location / Tag', ['location  tag', 'location', 'tag', 'equipment tag']),
       text('initiator', 'Initiator', ['initiator', 'raised by', 'initiated by']),
-      text('etc', 'ETC', ['etc', 'estimated completion', 'target']),
+      // A date picker, not a text box — this is the commitment date the whole
+      // dashboard counts from. Two of the eight ETCs in the real sheet are
+      // phrases ("Next Shutdown"), so the form keeps a way to type one; see the
+      // date field in the drawer.
+      date('etc', 'ETC', ['etc', 'estimated completion', 'target']),
       text('actionBy', 'Action By', ['action by', 'actionby', 'responsible', 'owner']),
       select('status', 'Status', STATUSES, ['status']),
       select('priority', 'Priority', PRIORITY_VALUES, ['priority']),
@@ -439,7 +443,7 @@ export const REGISTERS = [
       select('priority', 'Priority', PRIORITY_VALUES, ['priority']),
       select('status', 'Status', STATUSES, ['status']),
       longtext('remarks', 'Remarks', ['remarks']),
-      text('etc', 'ETC', ['etc', 'estimated completion', 'target date']),
+      date('etc', 'ETC', ['etc', 'estimated completion', 'target date']),
       text('category', 'Category', ['category']),
       text('reference', 'Refrence', ['refrence', 'reference', 'ref']),
       text('owner', 'Recom Owner', ['recom owner', 'recommendation owner', 'initiator']),
