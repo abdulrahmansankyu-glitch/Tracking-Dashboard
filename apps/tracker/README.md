@@ -402,6 +402,29 @@ services sleep after 15 minutes idle and take about 50 seconds to wake, and **th
 free database is deleted after 30 days**. Before this holds work you cannot lose,
 move to a paid database or to Neon's free tier, which persists.
 
+### The cold start
+
+A sleeping service shows Render's own "service waking up" screen for about fifty
+seconds — served before this app is running, so it cannot be styled or skipped
+from here. Any inbound request resets the idle timer, so
+[`.github/workflows/tracker-keep-awake.yml`](../../.github/workflows/tracker-keep-awake.yml)
+pings `/api/health` every five minutes, Sunday to Thursday, 05:00–17:55 local.
+Nobody on the plant meets the screen during the working day.
+
+It stops outside those hours on purpose. Render's free tier allows 750
+instance-hours a month per workspace; awake around the clock is about 730 of
+them, which would spend the entire allowance and starve any other service
+sharing it. The working-hours window is roughly 280.
+
+Five minutes rather than ten because GitHub's scheduled runs are best effort and
+often late — at a ten minute interval one delayed run is enough to let the
+service sleep. A failed ping logs a warning rather than failing the job: it runs
+150 times a week, and a red cross every time Render blips would train everyone to
+ignore the Actions tab, including when the reminder job fails.
+
+This is a workaround for a free plan, not a fix. Render's paid instance never
+sleeps, and the workflow can be deleted the day you move to one.
+
 ---
 
 ## Accounts and permissions
