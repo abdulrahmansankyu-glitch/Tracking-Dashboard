@@ -49,6 +49,14 @@ import {
 } from './reminders.js';
 import { sanitiseData, summarise } from './query.js';
 import {
+  calendarOf,
+  currentWeek,
+  defaultRota,
+  fillRota,
+  normaliseRota,
+  unfilledCount,
+} from './rota.js';
+import {
   AREA_OPTIONS,
   DUE_SOON_DAYS,
   PRIORITY_VALUES,
@@ -1288,6 +1296,115 @@ export async function createApp(env = process.env, overrides = {}) {
   app.get('/api/activity', requireAccess('read'), async (_req, res, next) => {
     try {
       res.json({ activity: await store.recentActivity(60) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+
+  // ---- Safety duty rota ---------------------------------------------------
+  //
+  // One JSON document in `tracker.settings`, read and written whole. It is the
+  // shared answer to "who is on this week?" — the reason it lives on the server
+  // at all rather than in each browser, which is where the spreadsheet it
+  // replaces effectively lived.
+
+  /** The stored rota, or a seeded one the first time anybody opens the page. */
+  const loadRota = async () => {
+    const raw = await store.getSetting('rota');
+    if (!raw) return defaultRota();
+    try {
+      return normaliseRota(JSON.parse(raw));
+    } catch {
+      // A settings row that will not parse is not worth taking the page down for.
+      return defaultRota();
+    }
+  };
+
+  const saveRota = async (doc, req, summary) => {
+    const saved = {
+      ...doc,
+      rev: (doc.rev ?? 0) + 1,
+      updatedAt: new Date().toISOString(),
+      updatedBy: actorOf(req),
+    };
+    await store.setSetting('rota', JSON.stringify(saved));
+    await store.logActivity({
+      id: randomUUID(),
+      at: saved.updatedAt,
+      actor: saved.updatedBy,
+      action: 'rota',
+      register: null,
+      recordId: null,
+      summary,
+      detail: { weeks: saved.weeks, startISO: saved.startISO, people: saved.people.length },
+    });
+    return saved;
+  };
+
+  const rotaPayload = (doc) => ({
+    rota: doc,
+    calendar: calendarOf(doc),
+    thisWeek: currentWeek(doc),
+    unfilled: unfilledCount(doc),
+  });
+
+  app.get('/api/rota', requireAccess('read'), async (_req, res, next) => {
+    try {
+      res.json(rotaPayload(await loadRota()));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * Save the whole document.
+   *
+   * Two people editing the rota in different tabs is normal — one is moving a
+   * name, the other is adding somebody to the team. The revision the browser last
+   * read comes back with the save; if the stored one has moved on since, the write
+   * is refused and the current document is returned, so the browser shows their
+   * colleague's change rather than silently overwriting it.
+   */
+  app.put('/api/rota', requireAccess('write'), async (req, res, next) => {
+    try {
+      const current = await loadRota();
+      const sent = req.body ?? {};
+      if (Number(sent.rev) !== current.rev) {
+        return res.status(409).json({
+          error: 'Somebody else changed the rota while this page was open. Reloaded their version.',
+          conflict: true,
+          ...rotaPayload(current),
+        });
+      }
+      const doc = normaliseRota({ ...sent, rev: current.rev });
+      res.json(rotaPayload(await saveRota(doc, req, 'Updated the safety duty rota')));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /** Share the duties out again, leaving hand-edited groups where they are. */
+  app.post('/api/rota/fill', requireAccess('write'), async (req, res, next) => {
+    try {
+      const current = await loadRota();
+      const sent = req.body ?? {};
+      if (sent.rev !== undefined && Number(sent.rev) !== current.rev) {
+        return res.status(409).json({
+          error: 'Somebody else changed the rota while this page was open. Reloaded their version.',
+          conflict: true,
+          ...rotaPayload(current),
+        });
+      }
+
+      const parts = sent.parts ?? {};
+      const which = ['kpi', 'wt', 'we'].filter((part) => parts[part] !== false);
+      const filled = fillRota(current, parts);
+      const label =
+        which.length === 3
+          ? 'Filled the whole safety duty rota'
+          : `Filled the duty rota (${which.join(', ')})`;
+      res.json(rotaPayload(await saveRota(filled, req, label)));
     } catch (error) {
       next(error);
     }

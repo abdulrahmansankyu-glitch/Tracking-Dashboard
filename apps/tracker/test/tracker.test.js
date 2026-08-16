@@ -34,6 +34,20 @@ import {
   todayIso,
 } from '../src/registers.js';
 import { nextRef, periodOf } from '../src/autonumber.js';
+import {
+  AREAS,
+  calendarOf,
+  countsFor,
+  defaultRota,
+  fillRota,
+  kpiAt,
+  mondaysOf,
+  normaliseRota,
+  toIsoDate,
+  unfilledCount,
+  walkthroughAt,
+  weekKeyOf,
+} from '../src/rota.js';
 import { createMailer, explainSmtpFailure } from '../src/mailer.js';
 import {
   bandOf,
@@ -1634,5 +1648,198 @@ test('the form is offered the next number before anyone commits to it', async ()
 
     const refused = await fetch(`${base}/api/registers/iws/next-ref`);
     assert.equal(refused.status, 400, 'IWS numbers come from the sheet, not from us');
+  });
+});
+
+// --------------------------------------------------------------- duty rota --
+//
+// The rota fails silently in exactly one way: it looks filled, and is quietly
+// unfair or quietly short. Each test below pins one of the promises the screen
+// makes about it.
+
+test('a filled rota meets every target, and nobody covers both areas of one task', () => {
+  const doc = fillRota({ ...defaultRota(), startISO: '2026-08-03', weeks: 12 });
+
+  for (const monday of mondaysOf(doc)) {
+    const week = weekKeyOf(monday);
+    for (const task of doc.tasks) {
+      const seen = [];
+      for (const area of AREAS) {
+        const people = kpiAt(doc, week, task.key, area);
+        assert.equal(people.length, task[area], `${week} ${task.key} ${area}`);
+        for (const id of people) {
+          assert.ok(!seen.includes(id), `${id} covers both areas of ${task.key} in ${week}`);
+          seen.push(id);
+        }
+      }
+    }
+
+    // Two people per area on the walkthrough, and four different people on the day.
+    const onTheDay = [];
+    for (const area of AREAS) {
+      const people = walkthroughAt(doc, toIsoDate(monday), area);
+      assert.equal(people.length, doc.wtPerArea);
+      for (const id of people) {
+        assert.ok(!onTheDay.includes(id), `${id} walks twice on ${toIsoDate(monday)}`);
+        onTheDay.push(id);
+      }
+    }
+  }
+
+  assert.equal(unfilledCount(doc), 0);
+});
+
+test('the work is shared out evenly, and the weekend is a strict rotation', () => {
+  const doc = fillRota({ ...defaultRota(), startISO: '2026-08-03', weeks: 12 });
+  const counts = doc.people.map((person) => countsFor(doc, person.id));
+
+  const kpi = counts.map((c) => c.kpi);
+  assert.equal(Math.max(...kpi) - Math.min(...kpi), 0, 'KPI duties divide evenly here');
+
+  const walks = counts.map((c) => c.walkthrough);
+  assert.equal(Math.max(...walks) - Math.min(...walks), 0);
+
+  // 12 Saturdays over 8 people: everybody takes one before anybody takes a second.
+  const weekends = counts.map((c) => c.weekend);
+  assert.ok(Math.max(...weekends) - Math.min(...weekends) <= 1, 'weekends within one of each other');
+});
+
+test('filling twice gives the same rota', () => {
+  const once = fillRota({ ...defaultRota(), startISO: '2026-08-03', weeks: 6 });
+  const twice = fillRota(once);
+
+  // A rota that rearranges itself every time somebody presses the button is one
+  // nobody can print and trust, so the fill is deliberately deterministic.
+  assert.deepEqual(twice.kpi.data, once.kpi.data);
+  assert.deepEqual(twice.wt.data, once.wt.data);
+  assert.deepEqual(twice.we.data, once.we.data);
+});
+
+test('a hand-picked name survives the next fill, and still counts as that person\'s work', () => {
+  const base = fillRota({ ...defaultRota(), startISO: '2026-08-03', weeks: 8 });
+  const week = weekKeyOf(mondaysOf(base)[0]);
+  const task = base.tasks[0].key;
+  const chosen = base.people.at(-1).id;
+
+  base.kpi.data[week][task].SHP = [chosen];
+  base.kpi.locked[`${week}|${task}|SHP`] = true;
+
+  const filled = fillRota(base);
+  assert.deepEqual(kpiAt(filled, week, task, 'SHP'), [chosen], 'the manual pick stays put');
+
+  // And the rest of the rota works around it rather than handing that person a
+  // double week — which is what happens if a locked group is merely skipped.
+  assert.ok(
+    !kpiAt(filled, week, task, 'DCU').includes(chosen),
+    'the same person should not also take the other area of that task',
+  );
+});
+
+test('somebody marked unavailable is never given a duty', () => {
+  const start = defaultRota();
+  start.startISO = '2026-08-03';
+  start.weeks = 10;
+  start.people[1].active = false;
+  const away = start.people[1].id;
+
+  const doc = fillRota(start);
+  assert.equal(countsFor(doc, away).total, 0);
+
+  // Everyone else still gets a full rota — one person on leave must not leave holes.
+  assert.equal(unfilledCount(doc), 0);
+});
+
+test('a rota that mentions a deleted person is cleaned up rather than showing a blank', () => {
+  const doc = fillRota({ ...defaultRota(), startISO: '2026-08-03', weeks: 4 });
+  const removed = doc.people[0].id;
+  doc.people = doc.people.slice(1);
+
+  const cleaned = normaliseRota(doc);
+  for (const monday of mondaysOf(cleaned)) {
+    const week = weekKeyOf(monday);
+    for (const task of cleaned.tasks) {
+      for (const area of AREAS) {
+        assert.ok(!kpiAt(cleaned, week, task.key, area).includes(removed));
+      }
+    }
+  }
+});
+
+test('week numbers are right across a year boundary', () => {
+  // 2026 is a 53-week year, which is the case a naive week number gets wrong.
+  const doc = normaliseRota({ ...defaultRota(), startISO: '2026-12-14', weeks: 4 });
+  assert.deepEqual(
+    calendarOf(doc).map((week) => week.week),
+    ['2026-W51', '2026-W52', '2026-W53', '2027-W01'],
+  );
+
+  // A start date mid-week is snapped back to that week's Monday.
+  assert.equal(normaliseRota({ startISO: '2026-08-06' }).startISO, '2026-08-03');
+});
+
+test('the rota survives anything the browser might send', () => {
+  const doc = normaliseRota({
+    people: [
+      { id: 'a', name: 'One' },
+      { id: 'a', name: 'Two' }, // duplicate id
+      { id: 'c', name: '' }, // no name
+    ],
+    tasks: [{ key: 'wpa', SHP: 99, DCU: -3 }],
+    weeks: 9999,
+    kpi: { data: { '2026-W32': { WPA: { SHP: ['ghost', 'a', 'a'] } } } },
+  });
+
+  assert.deepEqual(
+    doc.people.map((p) => p.id),
+    ['a', 'p2'],
+    'ids are made unique and nameless rows dropped',
+  );
+  assert.deepEqual(doc.tasks[0], { key: 'WPA', SHP: 8, DCU: 0 }, 'targets are clamped');
+  assert.equal(doc.weeks, 53);
+  assert.deepEqual(doc.kpi.data['2026-W32'].WPA.SHP, ['a'], 'unknown and duplicate ids removed');
+});
+
+test('a rota save from a stale page is refused rather than overwriting a colleague', async () => {
+  await withServer(async (base) => {
+    const read = async () => (await fetch(`${base}/api/rota`)).json();
+    const first = await read();
+    assert.equal(first.rota.rev, 0);
+    assert.equal(first.calendar.length, first.rota.weeks);
+
+    const filled = await (
+      await fetch(`${base}/api/rota/fill`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rev: first.rota.rev }),
+      })
+    ).json();
+    assert.equal(filled.rota.rev, 1);
+    assert.equal(filled.unfilled, 0);
+
+    // Somebody else's tab still believes it is looking at revision 0.
+    const stale = await fetch(`${base}/api/rota`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...first.rota, weeks: 2 }),
+    });
+    assert.equal(stale.status, 409);
+
+    const body = await stale.json();
+    assert.ok(body.conflict);
+    assert.equal(body.rota.rev, 1, 'the refusal carries the current rota back');
+    assert.equal((await read()).rota.weeks, filled.rota.weeks, 'nothing was overwritten');
+
+    // The same save, sent against the revision it actually read, goes through.
+    const fresh = await read();
+    const ok = await fetch(`${base}/api/rota`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...fresh.rota, weeks: 2 }),
+    });
+    assert.equal(ok.status, 200);
+    assert.equal((await ok.json()).rota.weeks, 2);
+
+    const logged = await (await fetch(`${base}/api/activity`)).json();
+    assert.ok(logged.activity.some((entry) => entry.action === 'rota'));
   });
 });

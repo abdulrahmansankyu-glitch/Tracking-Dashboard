@@ -48,6 +48,52 @@ each register, and the table sorts on any column.
 
 ---
 
+## The duty rota
+
+**Duty rota** in the sidebar shares the safety duties out across the team, in
+place of the spreadsheet that was being juggled by hand. It covers the three
+rotas the team keeps:
+
+| Rota | What it covers |
+| --- | --- |
+| **Safety KPI** | Each week, every task (WPA, UCO, BOP, SM) filled to its target in both SHP and DCU |
+| **Internal walkthrough** | Two people per area, every Monday |
+| **Weekend coverage** | One person on each Saturday |
+
+The band at the top always answers **who is on this week**, on whichever tab is
+open. **By person** gives one person's duties week by week, ready to copy and
+send to them.
+
+### How the fill decides
+
+Every slot goes to whoever is carrying the least work at that moment. Ties break
+by who went longest without a turn, then by position on the team list, so the
+result is deterministic — pressing Fill twice does not reshuffle the team, which
+is what makes a printed copy worth trusting. Two rules are always enforced:
+
+- nobody covers both areas of the same task in one week;
+- nobody does two walkthroughs on the same date.
+
+Weekend cover is a strict rotation: nobody takes a second Saturday until
+everybody has taken a first.
+
+### Overriding it
+
+Click a KPI cell to move a name in or out; on the walkthrough and weekend tabs,
+pick a different name from the list. An edited group is marked and the next fill
+works around it — still counting that person's load, so the rest of the rota
+adjusts rather than handing them a double week. **Clear edits** releases them.
+
+Untick **Available** on the Team tab for somebody on leave and the next fill
+skips them. Their existing duties stay put, so it is visible what needs handing
+over. **Workload balance** shows how evenly the window has come out.
+
+Editing needs an editor or admin account; a viewer sees the rota read-only. The
+whole rota is one shared document — everyone sees the same one, and a save from a
+page that has gone stale is refused rather than overwriting a colleague's change.
+
+---
+
 ## Document numbers
 
 Action Notices are numbered by the app: **`PA-2608-01`** — `PA`, the two-digit

@@ -46,7 +46,7 @@ function flatten(source) {
 const read = (path) => readFile(path, 'utf8');
 
 async function build(outfile, { fragment = false } = {}) {
-  const [exceljsBundle, styles, registers, query, excel, standalone, app] = await Promise.all([
+  const [exceljsBundle, styles, registers, query, excel, rota, standalone, app] = await Promise.all([
     // ExcelJS ships a browser UMD build, so reading and writing real .xlsx files
     // needs no server and no bundler of our own.
     read(require.resolve('exceljs/dist/exceljs.min.js')),
@@ -54,6 +54,7 @@ async function build(outfile, { fragment = false } = {}) {
     read(join(here, 'src/registers.js')),
     read(join(here, 'src/query.js')),
     read(join(here, 'src/excel.js')),
+    read(join(here, 'src/rota.js')),
     read(join(here, 'public/standalone.js')),
     read(join(here, 'public/app.js')),
   ]);
@@ -63,7 +64,7 @@ async function build(outfile, { fragment = false } = {}) {
   // so it can run on its own against the hosted API, and in one flat scope those
   // would collide with the originals. The only thing that needs to cross the
   // boundary is the local handler, and it is installed on `globalThis`.
-  const modules = `(() => {\n${[registers, query, excel, standalone].map(flatten).join('\n\n')}\n})();`;
+  const modules = `(() => {\n${[registers, query, excel, rota, standalone].map(flatten).join('\n\n')}\n})();`;
 
   const body = `<div id="root">
       <div class="empty"><span class="spin"></span> Loading tracker…</div>

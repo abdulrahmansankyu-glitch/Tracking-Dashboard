@@ -20,15 +20,16 @@ const STORAGE_KEY = 'tracker.standalone.v1';
 function load() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { records: [], activity: [], imports: [] };
+    if (!raw) return { records: [], activity: [], imports: [], rota: null };
     const parsed = JSON.parse(raw);
     return {
       records: Array.isArray(parsed.records) ? parsed.records : [],
       activity: Array.isArray(parsed.activity) ? parsed.activity : [],
       imports: Array.isArray(parsed.imports) ? parsed.imports : [],
+      rota: parsed.rota ?? null,
     };
   } catch {
-    return { records: [], activity: [], imports: [] };
+    return { records: [], activity: [], imports: [], rota: null };
   }
 }
 
@@ -389,6 +390,53 @@ globalThis.__trackerLocalApi = async function localApi(path, options = {}) {
         await buildWorkbook([{ register, records: [] }]),
         `${register.name.replace(/\s+/g, '_')}_template.xlsx`,
       );
+    }
+
+
+    // ---- duty rota --------------------------------------------------------
+    //
+    // The same endpoints the server answers, over the same rota module, so the
+    // offline copy shares the duties out by exactly the rules the hosted one
+    // does. Only the storage differs — this browser rather than the team's
+    // database, which makes an offline rota one person's working copy.
+
+    if (pathname === '/api/rota' || pathname === '/api/rota/fill') {
+      const stored = state.rota ? normaliseRota(state.rota) : defaultRota();
+      const answer = (doc, status = 200) =>
+        json(
+          {
+            rota: doc,
+            calendar: calendarOf(doc),
+            thisWeek: currentWeek(doc),
+            unfilled: unfilledCount(doc),
+          },
+          status,
+        );
+
+      const commit = (doc, summary) => {
+        state.rota = {
+          ...doc,
+          rev: stored.rev + 1,
+          updatedAt: new Date().toISOString(),
+          updatedBy: actor,
+        };
+        logActivity({ actor, action: 'rota', summary });
+        persist();
+        return answer(state.rota);
+      };
+
+      if (pathname === '/api/rota' && method === 'GET') return answer(stored);
+
+      if (pathname === '/api/rota' && method === 'PUT') {
+        if (Number(payload?.rev) !== stored.rev) {
+          return answer(stored, 409);
+        }
+        return commit(normaliseRota({ ...payload, rev: stored.rev }), 'Updated the safety duty rota');
+      }
+
+      if (pathname === '/api/rota/fill' && method === 'POST') {
+        return commit(fillRota(stored, payload?.parts ?? {}), 'Filled the safety duty rota');
+      }
     }
 
     return fail(404, 'Unknown endpoint.');

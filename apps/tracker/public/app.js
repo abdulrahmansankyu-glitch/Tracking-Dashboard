@@ -115,6 +115,9 @@ const state = {
   imports: null,
   importsScope: null,
   activity: null,
+  rota: null, // { rota, calendar, thisWeek, unfilled } — the shared duty rota
+  rotaTab: 'kpi',
+  rotaPerson: null,
   busy: false,
   error: null,
   toast: null,
@@ -450,6 +453,7 @@ function go(view, registerId = null) {
   }
 
   if (view === 'dashboard') loadDashboard();
+  else if (view === 'rota') loadRota();
   else if (view === 'register') {
     state.query = defaultQuery();
     state.list = null;
@@ -804,6 +808,18 @@ function renderSidebar() {
       },
       h('span', { class: 'short' }, '▦'),
       h('span', { class: 'grow' }, 'Dashboard'),
+    ),
+
+    h(
+      'button',
+      {
+        class: 'nav-item',
+        'aria-current': String(state.view === 'rota'),
+        onclick: () => go('rota'),
+        title: 'Safety KPI, walkthrough and weekend duties',
+      },
+      h('span', { class: 'short' }, '☰'),
+      h('span', { class: 'grow' }, 'Duty rota'),
     ),
 
     h('div', { class: 'nav-label' }, 'Registers'),
@@ -2911,10 +2927,1077 @@ function renderSettings() {
   );
 }
 
+// ------------------------------------------------------------- duty rota --
+//
+// The safety duty rota: who covers which task, in which area, in which week.
+// Everything about *how* the duties are shared out lives on the server in
+// `rota.js`; this is the screen for it. The two writes it makes — save the
+// document, fill it again — each come back with the whole document, so the
+// screen never has to guess what the server decided.
+
+const ROTA_AREAS = ['SHP', 'DCU'];
+
+const ROTA_TABS = [
+  ['kpi', 'Safety KPI'],
+  ['walkthrough', 'Walkthrough'],
+  ['weekend', 'Weekend'],
+  ['person', 'By person'],
+  ['team', 'Team'],
+];
+
+const rotaDoc = () => state.rota?.rota ?? null;
+
+const rotaNameOf = (id) => rotaDoc()?.people.find((person) => person.id === id)?.name ?? '—';
+
+async function loadRota() {
+  state.busy = true;
+  render();
+  try {
+    state.rota = await api('/api/rota');
+    if (!state.rotaPerson || !state.rota.rota.people.some((p) => p.id === state.rotaPerson)) {
+      state.rotaPerson = state.rota.rota.people[0]?.id ?? null;
+    }
+    state.error = null;
+  } catch (error) {
+    state.error = error.message;
+  } finally {
+    state.busy = false;
+    render();
+  }
+}
+
+/**
+ * Change the rota by editing a copy and sending the whole thing back.
+ *
+ * A rejected save is almost always somebody else having saved first, so the
+ * answer is to show their version rather than to retry ours over the top of it.
+ */
+async function pushRota(mutate, note) {
+  const doc = rotaDoc();
+  if (!doc) return;
+
+  const next = JSON.parse(JSON.stringify(doc));
+  mutate(next);
+
+  state.busy = true;
+  render();
+  try {
+    state.rota = await api('/api/rota', { method: 'PUT', json: next });
+    state.error = null;
+    state.busy = false;
+    if (note) toast(note);
+    render();
+  } catch (error) {
+    state.busy = false;
+    toast(error.message);
+    await loadRota();
+  }
+}
+
+async function fillRotaNow(parts, note) {
+  const doc = rotaDoc();
+  if (!doc) return;
+
+  state.busy = true;
+  render();
+  try {
+    state.rota = await api('/api/rota/fill', { method: 'POST', json: { rev: doc.rev, parts } });
+    state.error = null;
+    state.busy = false;
+    toast(note);
+    render();
+  } catch (error) {
+    state.busy = false;
+    toast(error.message);
+    await loadRota();
+  }
+}
+
+/** Read one person's duties out of the document. No scheduling decisions here. */
+function rotaDutiesFor(personId) {
+  const payload = state.rota;
+  const doc = payload?.rota;
+  if (!doc || !personId) return [];
+
+  const duties = [];
+  for (const week of payload.calendar) {
+    for (const task of doc.tasks) {
+      for (const area of ROTA_AREAS) {
+        if ((doc.kpi.data[week.week]?.[task.key]?.[area] ?? []).includes(personId)) {
+          duties.push({ week, what: task.key, area, when: null, kind: 'KPI' });
+        }
+      }
+    }
+    for (const area of ROTA_AREAS) {
+      if ((doc.wt.data[week.mondayIso]?.[area] ?? []).includes(personId)) {
+        duties.push({ week, what: 'Walkthrough', area, when: week.mondayText, kind: 'Walkthrough' });
+      }
+    }
+    if ((doc.we.data[week.saturdayIso] ?? []).includes(personId)) {
+      duties.push({
+        week,
+        what: 'Weekend cover',
+        area: null,
+        when: week.saturdayText,
+        kind: 'Weekend',
+      });
+    }
+  }
+  return duties;
+}
+
+function rotaCountsFor(personId) {
+  const duties = rotaDutiesFor(personId);
+  const of = (kind) => duties.filter((duty) => duty.kind === kind).length;
+  return { kpi: of('KPI'), wt: of('Walkthrough'), we: of('Weekend'), total: duties.length };
+}
+
+const areaChip = (area, label) =>
+  h('span', { class: `chip a-${area.toLowerCase()}` }, label ?? area);
+
+// ---- this week ------------------------------------------------------------
+
+function renderDutyBoard() {
+  const week = state.rota?.thisWeek;
+
+  if (!week) {
+    return h(
+      'div',
+      { class: 'card' },
+      h('header', null, h('h2', null, 'On duty this week')),
+      h(
+        'div',
+        { class: 'hint' },
+        'This week falls outside the planned window. Set the start week under Schedule on the Safety KPI tab.',
+      ),
+    );
+  }
+
+  const card = (title, names, tone) =>
+    h(
+      'div',
+      { class: `duty-card${tone ? ` is-${tone}` : ''}` },
+      h('h3', null, title),
+      h(
+        'div',
+        { class: 'names' },
+        names.length
+          ? names
+          : h('span', { class: 'hint' }, 'Nobody assigned'),
+      ),
+    );
+
+  return h(
+    'div',
+    { class: 'card' },
+    h(
+      'header',
+      null,
+      h('h2', null, 'On duty this week'),
+      h('span', { class: 'hint' }, `${week.label} · ${week.range}`),
+    ),
+    h(
+      'div',
+      { class: 'duty-board' },
+      week.tasks.map((task) =>
+        card(
+          task.key,
+          ROTA_AREAS.flatMap((area) =>
+            (task.areas[area] ?? []).map((name) => areaChip(area, `${area} · ${name}`)),
+          ),
+        ),
+      ),
+      ROTA_AREAS.map((area) =>
+        card(
+          `Walkthrough · ${area}`,
+          (week.walkthrough[area] ?? []).map((name) => areaChip(area, name)),
+          area.toLowerCase(),
+        ),
+      ),
+      card(
+        'Weekend cover',
+        week.weekend.map((name) => h('span', { class: 'chip p-medium' }, name)),
+      ),
+    ),
+  );
+}
+
+// ---- safety KPI -----------------------------------------------------------
+
+function renderRotaSchedule() {
+  const doc = rotaDoc();
+
+  const number = (id, label, value, min, max, apply) =>
+    h(
+      'label',
+      { class: 'field' },
+      h('span', null, label),
+      h('input', {
+        type: 'number',
+        id,
+        min: String(min),
+        max: String(max),
+        value: String(value),
+        onchange: (event) => {
+          const next = Number(event.target.value);
+          if (Number.isFinite(next)) pushRota((draft) => apply(draft, next));
+        },
+      }),
+    );
+
+  return h(
+    'details',
+    { class: 'card' },
+    h(
+      'summary',
+      null,
+      h('strong', null, 'Schedule and targets'),
+      h(
+        'span',
+        { class: 'hint', style: 'margin-left: 10px' },
+        `${doc.weeks} weeks from ${state.rota.calendar[0]?.mondayText ?? '—'}`,
+      ),
+    ),
+    h(
+      'div',
+      { style: 'margin-top: 14px' },
+      h(
+        'div',
+        { class: 'toolbar' },
+        h(
+          'label',
+          { class: 'field' },
+          h('span', null, 'Start week (Monday)'),
+          h('input', {
+            type: 'date',
+            id: 'rota-start',
+            value: doc.startISO,
+            onchange: (event) => {
+              if (event.target.value) {
+                pushRota((draft) => {
+                  draft.startISO = event.target.value;
+                });
+              }
+            },
+          }),
+        ),
+        number('rota-weeks', 'Weeks', doc.weeks, 1, 53, (draft, value) => {
+          draft.weeks = value;
+        }),
+        number('rota-wt', 'Walkthrough per area', doc.wtPerArea, 1, 8, (draft, value) => {
+          draft.wtPerArea = value;
+        }),
+        number('rota-we', 'People per weekend', doc.wePerDate, 1, 4, (draft, value) => {
+          draft.wePerDate = value;
+        }),
+      ),
+
+      h('div', { class: 'nav-label', style: 'padding-left: 0' }, 'Weekly target per task'),
+      h(
+        'div',
+        { class: 'table-wrap' },
+        h(
+          'table',
+          null,
+          h(
+            'thead',
+            null,
+            h(
+              'tr',
+              null,
+              h('th', null, 'Task'),
+              h('th', null, 'SHP'),
+              h('th', null, 'DCU'),
+              h('th', null, 'Per week'),
+              h('th', null, ''),
+            ),
+          ),
+          h(
+            'tbody',
+            null,
+            doc.tasks.map((task, index) =>
+              h(
+                'tr',
+                null,
+                h(
+                  'td',
+                  null,
+                  h('input', {
+                    type: 'text',
+                    value: task.key,
+                    id: `rota-task-${index}`,
+                    style: 'max-width: 110px',
+                    onchange: (event) => {
+                      pushRota((draft) => {
+                        draft.tasks[index].key = event.target.value;
+                      });
+                    },
+                  }),
+                ),
+                ROTA_AREAS.map((area) =>
+                  h(
+                    'td',
+                    null,
+                    h('input', {
+                      type: 'number',
+                      min: '0',
+                      max: '8',
+                      value: String(task[area]),
+                      id: `rota-task-${index}-${area}`,
+                      style: 'max-width: 80px',
+                      onchange: (event) => {
+                        pushRota((draft) => {
+                          draft.tasks[index][area] = Number(event.target.value);
+                        });
+                      },
+                    }),
+                  ),
+                ),
+                h('td', null, String(task.SHP + task.DCU)),
+                h(
+                  'td',
+                  null,
+                  h(
+                    'button',
+                    {
+                      class: 'btn ghost sm',
+                      onclick: () =>
+                        pushRota((draft) => {
+                          draft.tasks.splice(index, 1);
+                        }, 'Task removed'),
+                    },
+                    'Remove',
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+      h(
+        'button',
+        {
+          class: 'btn sm',
+          style: 'margin-top: 10px',
+          onclick: () =>
+            pushRota((draft) => {
+              draft.tasks.push({ key: `TASK${draft.tasks.length + 1}`, SHP: 1, DCU: 1 });
+            }, 'Task added'),
+        },
+        'Add task',
+      ),
+    ),
+  );
+}
+
+function renderRotaKpi() {
+  const payload = state.rota;
+  const doc = payload.rota;
+  const editable = canWrite();
+
+  const toggle = (week, taskKey, area, personId) =>
+    pushRota((draft) => {
+      const forWeek = (draft.kpi.data[week] = draft.kpi.data[week] ?? {});
+      const forTask = (forWeek[taskKey] = forWeek[taskKey] ?? {});
+      const list = (forTask[area] ?? []).slice();
+      const at = list.indexOf(personId);
+      if (at >= 0) list.splice(at, 1);
+      else list.push(personId);
+      forTask[area] = list;
+      draft.kpi.locked[`${week}|${taskKey}|${area}`] = true;
+    });
+
+  const head = h(
+    'thead',
+    null,
+    h(
+      'tr',
+      null,
+      h('th', { class: 'c-name', rowspan: '3' }, 'Team member'),
+      h('th', { class: 'c-area', rowspan: '3' }, 'Area'),
+      payload.calendar.map((week) =>
+        h(
+          'th',
+          { class: 'wk-head wk-sep', colspan: String(doc.tasks.length) },
+          week.label,
+          h('span', { class: 'wk-dates' }, week.range),
+        ),
+      ),
+    ),
+    h(
+      'tr',
+      null,
+      payload.calendar.flatMap(() =>
+        doc.tasks.map((task, index) => h('th', { class: index === 0 ? 'wk-sep' : '' }, task.key)),
+      ),
+    ),
+    h(
+      'tr',
+      null,
+      payload.calendar.flatMap(() =>
+        doc.tasks.map((task, index) =>
+          h('th', { class: `tgt${index === 0 ? ' wk-sep' : ''}` }, `${task.SHP}+${task.DCU}`),
+        ),
+      ),
+    ),
+  );
+
+  const body = h(
+    'tbody',
+    null,
+    doc.people.flatMap((person) =>
+      ROTA_AREAS.map((area, areaIndex) =>
+        h(
+          'tr',
+          null,
+          areaIndex === 0 &&
+            h(
+              'td',
+              {
+                class: 'c-name',
+                rowspan: String(ROTA_AREAS.length),
+                style: person.active ? null : 'color: var(--ink-muted)',
+              },
+              person.active ? person.name : `${person.name} (away)`,
+            ),
+          h('td', { class: `c-area is-${area.toLowerCase()}` }, area),
+          payload.calendar.flatMap((week) =>
+            doc.tasks.map((task, taskIndex) => {
+              const on = (doc.kpi.data[week.week]?.[task.key]?.[area] ?? []).includes(person.id);
+              const edited = Boolean(doc.kpi.locked[`${week.week}|${task.key}|${area}`]);
+              const classes = [
+                'slot',
+                `is-${area.toLowerCase()}`,
+                on ? 'on' : '',
+                edited ? 'edited' : '',
+                taskIndex === 0 ? 'wk-sep' : '',
+                editable ? '' : 'readonly',
+              ]
+                .filter(Boolean)
+                .join(' ');
+
+              return h(
+                'td',
+                {
+                  class: classes,
+                  title: `${person.name} · ${task.key} · ${area} · ${week.label}`,
+                  onclick: editable ? () => toggle(week.week, task.key, area, person.id) : null,
+                },
+                on ? '1' : '',
+              );
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  const foot = h(
+    'tfoot',
+    null,
+    h(
+      'tr',
+      null,
+      h('td', { class: 'c-name' }, 'Total'),
+      h('td', { class: 'c-area' }, ''),
+      payload.calendar.flatMap((week) =>
+        doc.tasks.map((task, index) => {
+          const got = ROTA_AREAS.reduce(
+            (sum, area) => sum + (doc.kpi.data[week.week]?.[task.key]?.[area] ?? []).length,
+            0,
+          );
+          const want = task.SHP + task.DCU;
+          return h(
+            'td',
+            {
+              class: `${got < want ? 'short ' : ''}${index === 0 ? 'wk-sep' : ''}`,
+              title: `Target ${want}`,
+            },
+            String(got),
+          );
+        }),
+      ),
+    ),
+  );
+
+  return [
+    editable && renderRotaSchedule(),
+    h(
+      'div',
+      { class: 'card' },
+      h(
+        'header',
+        null,
+        h('h2', null, 'KPI matrix'),
+        h(
+          'span',
+          { class: 'hint' },
+          payload.unfilled
+            ? `${payload.unfilled} slot${payload.unfilled === 1 ? '' : 's'} still unfilled`
+            : 'Every target met',
+        ),
+        editable &&
+          h(
+            'button',
+            {
+              class: 'btn sm',
+              onclick: () =>
+                pushRota((draft) => {
+                  draft.kpi.locked = {};
+                }, 'Hand edits cleared'),
+            },
+            'Clear edits',
+          ),
+        editable &&
+          h(
+            'button',
+            {
+              class: 'btn primary sm',
+              onclick: () => fillRotaNow({ wt: false, we: false }, 'KPI rota filled'),
+            },
+            'Fill KPI',
+          ),
+      ),
+      h(
+        'div',
+        { class: 'hint', style: 'margin-bottom: 10px' },
+        editable
+          ? 'Click a cell to move a name in or out. An edited cell keeps a corner mark, and the next fill works around it.'
+          : 'Your account has view-only access, so the cells are not editable.',
+      ),
+      h('div', { class: 'table-wrap' }, h('table', { class: 'rota-grid' }, head, body, foot)),
+    ),
+  ];
+}
+
+// ---- walkthrough and weekend ---------------------------------------------
+
+function rotaPicker(currentId, area, onPick) {
+  const doc = rotaDoc();
+  return h(
+    'select',
+    {
+      class: `rota-pick${area ? ` is-${area.toLowerCase()}` : ''}`,
+      disabled: !canWrite(),
+      onchange: (event) => onPick(event.target.value),
+    },
+    h('option', { value: '', selected: !currentId }, '— not set —'),
+    doc.people.map((person) =>
+      h(
+        'option',
+        { value: person.id, selected: person.id === currentId },
+        person.active ? person.name : `${person.name} (away)`,
+      ),
+    ),
+  );
+}
+
+function renderRotaWalkthrough() {
+  const payload = state.rota;
+  const doc = payload.rota;
+
+  const setPerson = (dateIso, area, index, personId) =>
+    pushRota((draft) => {
+      const slot = (draft.wt.data[dateIso] = draft.wt.data[dateIso] ?? {});
+      const list = (slot[area] ?? []).slice();
+      while (list.length < draft.wtPerArea) list.push(null);
+      list[index] = personId || null;
+      slot[area] = list.filter(Boolean);
+      draft.wt.locked[`${dateIso}|${area}`] = true;
+    });
+
+  return h(
+    'div',
+    { class: 'card' },
+    h(
+      'header',
+      null,
+      h('h2', null, 'Internal walkthrough'),
+      h('span', { class: 'hint' }, `${doc.wtPerArea} per area, every Monday`),
+      canWrite() &&
+        h(
+          'button',
+          {
+            class: 'btn sm',
+            onclick: () =>
+              pushRota((draft) => {
+                draft.wt.locked = {};
+              }, 'Hand edits cleared'),
+          },
+          'Clear edits',
+        ),
+      canWrite() &&
+        h(
+          'button',
+          {
+            class: 'btn primary sm',
+            onclick: () => fillRotaNow({ kpi: false, we: false }, 'Walkthrough rota filled'),
+          },
+          'Fill walkthrough',
+        ),
+    ),
+    h(
+      'div',
+      { class: 'table-wrap' },
+      h(
+        'table',
+        null,
+        h(
+          'thead',
+          null,
+          h(
+            'tr',
+            null,
+            h('th', null, 'Week'),
+            h('th', null, 'Date'),
+            h('th', null, 'Area'),
+            Array.from({ length: doc.wtPerArea }, (_, i) => h('th', null, `Person ${i + 1}`)),
+          ),
+        ),
+        h(
+          'tbody',
+          null,
+          payload.calendar.flatMap((week) =>
+            ROTA_AREAS.map((area, areaIndex) => {
+              const list = doc.wt.data[week.mondayIso]?.[area] ?? [];
+              return h(
+                'tr',
+                null,
+                areaIndex === 0 && h('td', { rowspan: '2' }, week.label),
+                areaIndex === 0 && h('td', { rowspan: '2' }, week.mondayText),
+                h('td', null, areaChip(area)),
+                Array.from({ length: doc.wtPerArea }, (_, i) =>
+                  h(
+                    'td',
+                    null,
+                    rotaPicker(list[i], area, (value) =>
+                      setPerson(week.mondayIso, area, i, value),
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+function renderRotaWeekend() {
+  const payload = state.rota;
+  const doc = payload.rota;
+
+  const setPerson = (dateIso, index, personId) =>
+    pushRota((draft) => {
+      const list = (draft.we.data[dateIso] ?? []).slice();
+      while (list.length < draft.wePerDate) list.push(null);
+      list[index] = personId || null;
+      draft.we.data[dateIso] = list.filter(Boolean);
+      draft.we.locked[dateIso] = true;
+    });
+
+  const soFar = new Map();
+
+  return h(
+    'div',
+    { class: 'card' },
+    h(
+      'header',
+      null,
+      h('h2', null, 'Weekend coverage'),
+      h('span', { class: 'hint' }, 'Strict rotation — nobody takes a second before everybody has a first'),
+      canWrite() &&
+        h(
+          'button',
+          {
+            class: 'btn sm',
+            onclick: () =>
+              pushRota((draft) => {
+                draft.we.locked = {};
+              }, 'Hand edits cleared'),
+          },
+          'Clear edits',
+        ),
+      canWrite() &&
+        h(
+          'button',
+          {
+            class: 'btn primary sm',
+            onclick: () => fillRotaNow({ kpi: false, wt: false }, 'Weekend rota filled'),
+          },
+          'Fill weekends',
+        ),
+    ),
+    h(
+      'div',
+      { class: 'table-wrap' },
+      h(
+        'table',
+        null,
+        h(
+          'thead',
+          null,
+          h(
+            'tr',
+            null,
+            h('th', null, 'Week'),
+            h('th', null, 'Saturday'),
+            Array.from({ length: doc.wePerDate }, () => h('th', null, 'On cover')),
+            h('th', null, 'Turns so far'),
+          ),
+        ),
+        h(
+          'tbody',
+          null,
+          payload.calendar.map((week) => {
+            const list = doc.we.data[week.saturdayIso] ?? [];
+            for (const id of list) soFar.set(id, (soFar.get(id) ?? 0) + 1);
+            return h(
+              'tr',
+              null,
+              h('td', null, week.label),
+              h('td', null, week.saturdayText),
+              Array.from({ length: doc.wePerDate }, (_, i) =>
+                h('td', null, rotaPicker(list[i], null, (value) => setPerson(week.saturdayIso, i, value))),
+              ),
+              h(
+                'td',
+                { class: 'hint' },
+                list.map((id) => `${rotaNameOf(id)} ×${soFar.get(id)}`).join(', ') || '—',
+              ),
+            );
+          }),
+        ),
+      ),
+    ),
+  );
+}
+
+// ---- by person ------------------------------------------------------------
+
+function rotaPersonText(personId) {
+  const lines = [`${rotaNameOf(personId)} — duty list`];
+  const byWeek = new Map();
+
+  for (const duty of rotaDutiesFor(personId)) {
+    if (!byWeek.has(duty.week.week)) byWeek.set(duty.week.week, { week: duty.week, items: [] });
+    byWeek.get(duty.week.week).items.push(duty);
+  }
+  if (!byWeek.size) return `${lines[0]}\nNothing assigned.`;
+
+  for (const group of byWeek.values()) {
+    lines.push('');
+    lines.push(`${group.week.week}  (${group.week.range})`);
+    for (const duty of group.items) {
+      lines.push(
+        `  - ${duty.what}${duty.area ? ` — ${duty.area}` : ''}${duty.when ? ` — ${duty.when}` : ''}`,
+      );
+    }
+  }
+  return lines.join('\n');
+}
+
+function renderRotaPerson() {
+  const doc = rotaDoc();
+  const personId = state.rotaPerson ?? doc.people[0]?.id ?? null;
+  const counts = rotaCountsFor(personId);
+
+  const byWeek = new Map();
+  for (const duty of rotaDutiesFor(personId)) {
+    if (!byWeek.has(duty.week.week)) byWeek.set(duty.week.week, { week: duty.week, items: [] });
+    byWeek.get(duty.week.week).items.push(duty);
+  }
+
+  const tile = (label, value) =>
+    h('div', { class: 'kpi' }, h('div', { class: 'k-label' }, label), h('div', { class: 'k-value' }, String(value)));
+
+  return [
+    h(
+      'div',
+      { class: 'card' },
+      h(
+        'header',
+        null,
+        h('h2', null, 'By person'),
+        h('span', { class: 'hint' }, 'Everything one person owes — copy it and send it to them'),
+      ),
+      h(
+        'div',
+        { class: 'toolbar' },
+        h(
+          'label',
+          { class: 'field' },
+          h('span', null, 'Person'),
+          h(
+            'select',
+            {
+              id: 'rota-person',
+              onchange: (event) => {
+                state.rotaPerson = event.target.value;
+                render();
+              },
+            },
+            doc.people.map((person) =>
+              h('option', { value: person.id, selected: person.id === personId }, person.name),
+            ),
+          ),
+        ),
+        h(
+          'button',
+          {
+            class: 'btn',
+            onclick: async () => {
+              const text = rotaPersonText(personId);
+              try {
+                await navigator.clipboard.writeText(text);
+                toast('Copied the duty list.');
+              } catch {
+                // Clipboard access is refused on an insecure origin and in some
+                // locked-down browsers. Selecting the text is the way out.
+                window.prompt('Copy the duty list:', text);
+              }
+            },
+          },
+          'Copy as text',
+        ),
+      ),
+    ),
+    h('div', { class: 'kpis' }, tile('KPI duties', counts.kpi), tile('Walkthroughs', counts.wt), tile('Weekends', counts.we), tile('Total', counts.total)),
+    byWeek.size
+      ? h(
+          'div',
+          null,
+          [...byWeek.values()].map((group) =>
+            h(
+              'div',
+              { class: 'person-week' },
+              h(
+                'header',
+                null,
+                h('span', { class: 'wk' }, group.week.week),
+                h('span', { class: 'hint' }, group.week.range),
+              ),
+              h(
+                'ul',
+                null,
+                group.items.map((duty) =>
+                  h(
+                    'li',
+                    null,
+                    duty.area ? areaChip(duty.area) : h('span', { class: 'chip p-medium' }, 'Weekend'),
+                    h('span', null, duty.what),
+                    h('span', { class: 'meta' }, duty.when ?? duty.kind),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        )
+      : h('div', { class: 'card' }, h('div', { class: 'hint' }, 'Nothing assigned in this window yet.')),
+  ];
+}
+
+// ---- team -----------------------------------------------------------------
+
+function renderRotaTeam() {
+  const doc = rotaDoc();
+  const editable = canWrite();
+  const rows = doc.people.map((person) => ({ person, counts: rotaCountsFor(person.id) }));
+  const most = Math.max(1, ...rows.map((row) => row.counts.total));
+
+  return [
+    h(
+      'div',
+      { class: 'card' },
+      h(
+        'header',
+        null,
+        h('h2', null, 'Team'),
+        h('span', { class: 'hint' }, 'Untick somebody on leave and the next fill skips them'),
+        editable &&
+          h(
+            'button',
+            {
+              class: 'btn sm',
+              onclick: () => {
+                const name = window.prompt('Name of the new team member?');
+                if (!name || !name.trim()) return;
+                pushRota((draft) => {
+                  const ids = new Set(draft.people.map((p) => p.id));
+                  let id = `p${draft.people.length + 1}`;
+                  while (ids.has(id)) id = `${id}x`;
+                  draft.people.push({ id, name: name.trim(), active: true });
+                }, 'Added to the team');
+              },
+            },
+            'Add person',
+          ),
+      ),
+      h(
+        'div',
+        { class: 'team-list' },
+        doc.people.map((person, index) =>
+          h(
+            'div',
+            { class: `team-row${person.active ? '' : ' is-off'}` },
+            editable
+              ? h('input', {
+                  type: 'text',
+                  value: person.name,
+                  id: `rota-person-${index}`,
+                  onchange: (event) =>
+                    pushRota((draft) => {
+                      draft.people[index].name = event.target.value;
+                    }),
+                })
+              : h('strong', { style: 'flex: 1 1 100%' }, person.name),
+            h(
+              'label',
+              { class: 'switch' },
+              h('input', {
+                type: 'checkbox',
+                checked: person.active,
+                disabled: !editable,
+                onchange: (event) =>
+                  pushRota((draft) => {
+                    draft.people[index].active = event.target.checked;
+                  }),
+              }),
+              h('span', null, 'Available'),
+            ),
+            editable &&
+              h(
+                'button',
+                {
+                  class: 'btn ghost sm',
+                  onclick: () => {
+                    if (!window.confirm(`Remove ${person.name}? Their duties are cleared too.`)) return;
+                    pushRota((draft) => {
+                      draft.people.splice(index, 1);
+                    }, 'Removed from the team');
+                  },
+                },
+                'Remove',
+              ),
+          ),
+        ),
+      ),
+    ),
+
+    h(
+      'div',
+      { class: 'card' },
+      h(
+        'header',
+        null,
+        h('h2', null, 'Workload balance'),
+        h('span', { class: 'hint' }, 'Across the whole planned window'),
+      ),
+      h(
+        'div',
+        { class: 'table-wrap' },
+        h(
+          'table',
+          null,
+          h(
+            'thead',
+            null,
+            h(
+              'tr',
+              null,
+              ['Person', 'KPI', 'Walkthrough', 'Weekend', 'Total', 'Share'].map((label) =>
+                h('th', null, label),
+              ),
+            ),
+          ),
+          h(
+            'tbody',
+            null,
+            rows.map(({ person, counts }) =>
+              h(
+                'tr',
+                null,
+                h('td', null, person.active ? person.name : `${person.name} (away)`),
+                h('td', null, String(counts.kpi)),
+                h('td', null, String(counts.wt)),
+                h('td', null, String(counts.we)),
+                h('td', null, String(counts.total)),
+                h(
+                  'td',
+                  null,
+                  h(
+                    'div',
+                    { class: 'bar-track', title: `${counts.total} duties` },
+                    h('div', {
+                      class: 'bar-fill',
+                      style: `width: ${Math.round((counts.total / most) * 100)}%`,
+                    }),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  ];
+}
+
+// ---- the view -------------------------------------------------------------
+
+function renderRota() {
+  if (!state.rota) {
+    return h(
+      'div',
+      { class: 'content' },
+      h('div', { class: 'empty' }, h('span', { class: 'spin' }), ' Loading the rota…'),
+    );
+  }
+
+  const tab = state.rotaTab;
+
+  return h(
+    'div',
+    { class: 'content' },
+    state.error && h('div', { class: 'banner' }, state.error),
+    renderDutyBoard(),
+    h(
+      'div',
+      { class: 'rota-tabs' },
+      ROTA_TABS.map(([id, label]) =>
+        h(
+          'button',
+          {
+            'aria-current': String(tab === id),
+            onclick: () => {
+              state.rotaTab = id;
+              render();
+            },
+          },
+          label,
+        ),
+      ),
+    ),
+    tab === 'walkthrough'
+      ? renderRotaWalkthrough()
+      : tab === 'weekend'
+        ? renderRotaWeekend()
+        : tab === 'person'
+          ? renderRotaPerson()
+          : tab === 'team'
+            ? renderRotaTeam()
+            : renderRotaKpi(),
+  );
+}
+
 // ------------------------------------------------------------------ render --
 
 function titleFor() {
   if (state.view === 'dashboard') return ['Dashboard', 'Everything the team is tracking, in one place'];
+  if (state.view === 'rota') {
+    return ['Safety duty rota', 'Who covers which task, in which area, this week'];
+  }
   if (state.view === 'import') return ['Import Excel', 'One sheet at a time, into the register you choose'];
   if (state.view === 'activity') return ['Recent changes', 'Who changed what, and when'];
   if (state.view === 'settings') return ['Settings', 'Accounts, and what each person may do'];
@@ -2954,15 +4037,17 @@ function render() {
   const [title, subtitle] = titleFor();
 
   const body =
-    state.view === 'dashboard'
-      ? renderDashboard()
-      : state.view === 'register'
-        ? renderRegister()
-        : state.view === 'import'
-          ? renderImport()
-          : state.view === 'settings'
-            ? renderSettings()
-            : renderActivity();
+    state.view === 'rota'
+      ? renderRota()
+      : state.view === 'dashboard'
+        ? renderDashboard()
+        : state.view === 'register'
+          ? renderRegister()
+          : state.view === 'import'
+            ? renderImport()
+            : state.view === 'settings'
+              ? renderSettings()
+              : renderActivity();
 
   root.append(
     h(
