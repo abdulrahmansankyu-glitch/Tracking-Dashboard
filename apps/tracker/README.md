@@ -199,12 +199,23 @@ than replacing `Execution` with `High`.
 ## Excel export
 
 **Export all** produces one workbook: a Summary sheet plus one sheet per register,
-laid out like the Engineering Master file it replaces, with overdue rows tinted red
-and due-soon rows amber so the state is visible in Excel too.
+laid out like the Engineering Master file it replaces — a pale header, black text,
+a thin border on every cell, and no row colours.
+
+The sheet carries the register's own columns and nothing else. `Tracker Priority`,
+`Tracker Status`, `Tracker Due Date`, `Due State`, `Last Updated` and `Updated By`
+used to be appended and were removed at the team's request: an export is a
+document they forward to other people, and it should carry their columns rather
+than the app's bookkeeping, most of which restated a column already there.
+`Days To Due` is kept, being the one that answers something the sheet cannot.
+
+Overdue rows were tinted red and due-soon amber for the same reason and are now
+plain. The dashboard, the PDF report and the reminder emails all still say what
+is late.
 
 Exports **re-import cleanly** — download the master file, edit it offline, upload it
-back. The columns the app adds (`Tracker Priority`, `Days To Due`, …) are ignored on
-the way back in, so a round trip neither duplicates columns nor loses rows.
+back. All seven of those headers are still ignored on the way in, so a workbook
+exported before this change does not turn its old columns into data.
 
 **Blank template** gives an empty workbook with the right headers for one register —
 the quickest way to start one from scratch.

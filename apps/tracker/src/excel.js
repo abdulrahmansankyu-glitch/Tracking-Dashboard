@@ -369,28 +369,39 @@ export async function readSheet(buffer, sheetName, registerId) {
 // Export
 // ---------------------------------------------------------------------------
 
-const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3A5F' } };
-const HEADER_FONT = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+/**
+ * The exported sheet looks like the team's own workbook.
+ *
+ * A pale header with black text and a thin border on every cell, matching the
+ * Action Notice file this replaces. The earlier dark-navy banded style was the
+ * app's taste rather than theirs, and an export nobody recognises is one people
+ * reformat by hand before sending it on.
+ */
+const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCE6F1' } };
+const HEADER_FONT = { bold: true, color: { argb: 'FF000000' }, size: 11 };
+
+const THIN = { style: 'thin', color: { argb: 'FFB7BEC8' } };
+const CELL_BORDER = { top: THIN, left: THIN, bottom: THIN, right: THIN };
 
 /**
  * Columns appended after the register's own, carrying what the app worked out.
  *
- * Named so they cannot collide with any header the reader recognises — a workbook
- * exported from here re-imports cleanly, and these columns are ignored on the way
- * back in rather than fighting the originals.
+ * The team asked for these out of the export: an exported sheet is one they
+ * forward to other people, and it should carry their columns, not the app's
+ * bookkeeping. `Days To Due` is the one they kept — it answers a question the
+ * sheet cannot, and unlike the others it is not a restatement of a column
+ * already there.
+ *
+ * The reader still ignores all seven headers on the way back in, so workbooks
+ * exported before this change re-import without their old columns turning into
+ * data.
  */
 const COMPUTED_COLUMNS = [
-  { header: 'Tracker Priority', width: 14, value: (r) => r.priority },
-  { header: 'Tracker Status', width: 14, value: (r) => r.status },
-  { header: 'Tracker Due Date', width: 14, value: (r) => r.dueDate ?? '' },
   {
     header: 'Days To Due',
     width: 12,
     value: (r) => (r.dueDate && !CLOSED_STATUSES.has(r.status) ? daysUntil(r.dueDate) : ''),
   },
-  { header: 'Due State', width: 12, value: (r) => dueState(r.dueDate, r.status) },
-  { header: 'Last Updated', width: 18, value: (r) => (r.updatedAt ?? '').slice(0, 16).replace('T', ' ') },
-  { header: 'Updated By', width: 16, value: (r) => r.updatedBy ?? '' },
 ];
 
 function widthFor(field) {
@@ -421,6 +432,7 @@ function writeRegisterSheet(workbook, register, records) {
   headerRow.eachCell((cell) => {
     cell.fill = HEADER_FILL;
     cell.font = HEADER_FONT;
+    cell.border = CELL_BORDER;
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
   });
 
@@ -442,17 +454,16 @@ function writeRegisterSheet(workbook, register, records) {
     const row = sheet.addRow(values);
     row.alignment = { vertical: 'top', wrapText: true };
 
-    // Overdue rows are tinted so the state is visible in Excel too, not only in the app.
-    const state = dueState(record.dueDate, record.status);
-    if (state === 'overdue') {
-      row.eachCell((cell) => {
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDE7E9' } };
-      });
-    } else if (state === 'due-soon') {
-      row.eachCell((cell) => {
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF6E5' } };
-      });
-    }
+    // Rows are left unfilled on purpose.
+    //
+    // Overdue rows used to be tinted red and due-soon amber, so the state was
+    // visible in Excel as well as in the app. The team asked for it gone: the
+    // export is a document they forward, and the colours read as a mark-up on
+    // their sheet rather than as information. The dashboard, the PDF report and
+    // the reminder emails all still say what is late.
+    row.eachCell((cell) => {
+      cell.border = CELL_BORDER;
+    });
   });
 
   if (records.length) {
@@ -478,6 +489,7 @@ function writeSummarySheet(workbook, groups) {
   headerRow.eachCell((cell) => {
     cell.fill = HEADER_FILL;
     cell.font = HEADER_FONT;
+    cell.border = CELL_BORDER;
     cell.alignment = { vertical: 'middle', horizontal: 'center' };
   });
   sheet.columns = [{ width: 24 }, { width: 10 }, { width: 10 }, { width: 12 }, { width: 15 }, { width: 12 }, { width: 14 }];
