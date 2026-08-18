@@ -27,6 +27,7 @@ import {
   REGISTERS,
   deriveRecord,
   dueState,
+  exportTitle,
   formatDisplayDate,
   getRegister,
   normalisePriority,
@@ -2048,4 +2049,20 @@ test('one formatter decides how a date reads, everywhere', () => {
   assert.equal(formatDisplayDate('Next Shutdown'), 'Next Shutdown');
   assert.equal(formatDisplayDate(''), '');
   assert.equal(formatDisplayDate(null), '');
+});
+
+test('an exported sheet is headed like a document, not like a tooltip', async () => {
+  // The banner read "Action Notice — Engineering action notices raised on plant
+  // equipment." — the app's own description of itself, on a form that goes out
+  // to other departments.
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(
+    await buildWorkbook([{ register: getRegister('action-notice'), records: [] }]),
+  );
+
+  assert.equal(workbook.worksheets[0].getCell(1, 1).value, 'Engineering Action Notice');
+  assert.equal(exportTitle(getRegister('qc')), 'Engineering QC Report');
+
+  // A register may still name its own heading if the default does not suit.
+  assert.equal(exportTitle({ name: 'IWS', exportTitle: 'SHP IWS Tracking' }), 'SHP IWS Tracking');
 });

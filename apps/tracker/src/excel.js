@@ -24,6 +24,7 @@ import {
   daysUntil,
   deriveRecord,
   dueState,
+  exportTitle,
   getRegister,
   normaliseKey,
   toDateOnly,
@@ -624,7 +625,7 @@ function writeRegisterSheet(workbook, register, records, logoIds) {
   // Set before the banner, which measures them to place the right-hand logo.
   sheet.columns = widths.map((width) => ({ width }));
 
-  writeBanner(sheet, `${register.name} — ${register.description}`, widths, logoIds);
+  writeBanner(sheet, exportTitle(register), widths, logoIds);
 
   /**
    * Print setup, so the file arrives ready to print rather than ready to be

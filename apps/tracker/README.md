@@ -220,6 +220,12 @@ and Description — the column people actually read — was cramped into two wra
 lines beside them, and the total came to more than a page, so printing began with
 dragging every column by hand.
 
+Each sheet is headed **`Engineering <register>`** — a document title, since the
+file goes out to other departments. It was the register's name followed by its
+description, which read as a tooltip that had escaped onto a form; the
+description belongs on the register page in the app. A register can name its own
+heading with `exportTitle` if the default does not suit.
+
 **Dates are written as dates**, not as the text they happened to be stored as.
 The same ETC column held `16/08/2026`, `25-08-2026` and `2026-09-03` at once —
 imported rows kept the spelling their own sheet used, typed ones were ISO — so
@@ -447,7 +453,7 @@ it uses that instead; the tables are created on boot.
 | `TRACKER_MAIL_FROM` · `TRACKER_GRAPH_*` · `TRACKER_SMTP_*` · `TRACKER_BREVO_API_KEY` · `TRACKER_RESEND_API_KEY` | — | Reminder email — see above |
 
 ```bash
-pnpm --filter @intoto/tracker test     # 79 tests, no database needed
+pnpm --filter @intoto/tracker test     # 80 tests, no database needed
 ```
 
 ---
@@ -553,7 +559,7 @@ src/report.js      the printable Engineering Department Updates sheet
 src/autonumber.js  the PA-YYMM-NN rule for Action Notice document numbers
 src/reminders.js   who is reminded about what, and the digest they receive
 src/mailer.js      Microsoft Graph, SMTP, Brevo or Resend behind one send()
-test/              79 tests over the parts that would fail silently
+test/              80 tests over the parts that would fail silently
 ```
 
 The browser never carries its own copy of the register definitions — it reads them

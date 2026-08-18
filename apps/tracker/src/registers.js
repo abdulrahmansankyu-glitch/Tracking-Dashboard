@@ -611,6 +611,21 @@ export const REGISTERS = [
   },
 ];
 
+/**
+ * The heading across the top of an exported sheet.
+ *
+ * A document title, not a description of the software: the file goes out to
+ * other departments, and "Action Notice — Engineering action notices raised on
+ * plant equipment." reads as a tooltip that escaped onto a form. The `description`
+ * stays where it belongs, on the register page in the app.
+ *
+ * A register may name its own; otherwise it is the department and the register,
+ * which is how the team's own workbooks are headed.
+ */
+export function exportTitle(register) {
+  return register.exportTitle ?? `Engineering ${register.name}`;
+}
+
 export const REGISTER_BY_ID = new Map(REGISTERS.map((r) => [r.id, r]));
 
 export function getRegister(id) {
