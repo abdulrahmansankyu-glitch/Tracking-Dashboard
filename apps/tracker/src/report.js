@@ -199,16 +199,34 @@ function attentionTable(attention, registerNames) {
  * case the heading stands alone rather than a placeholder standing in for a
  * logo nobody supplied.
  */
-export async function buildReport({ summary, registerNames, logo, generatedBy, scopeNote }) {
+export async function buildReport({
+  summary,
+  registerNames,
+  logo,
+  logoRight,
+  generatedBy,
+  scopeNote,
+}) {
   const printer = new PdfPrinter(FONTS);
+
+  // Centred only when it sits between two logos. With one logo, or none, a
+  // centred heading drifts off-axis against the page rather than the pair.
+  const centred = Boolean(logo && logoRight);
 
   const heading = {
     stack: [
-      { text: 'Engineering Department Updates', fontSize: 17, bold: true, color: INK },
+      {
+        text: 'Engineering Department Updates',
+        fontSize: 17,
+        bold: true,
+        color: INK,
+        alignment: centred ? 'center' : 'left',
+      },
       {
         text: `Solid Handling Plant · DCU — status as at ${formatToday()}`,
         fontSize: 9.5,
         color: MUTED,
+        alignment: centred ? 'center' : 'left',
         margin: [0, 3, 0, 0],
       },
     ],
@@ -240,12 +258,18 @@ export async function buildReport({ summary, registerNames, logo, generatedBy, s
 
     content: [
       {
-        columns: logo
-          ? [
-              { image: logo, fit: [130, 40], width: 140 },
-              { ...heading, width: '*', margin: [12, 0, 0, 0] },
-            ]
-          : [{ ...heading, width: '*' }],
+        // The contractor's mark at the left, the client's at the right, with
+        // the heading between them — the arrangement the team's own workbooks
+        // use. Each column is a fixed width so the middle one stays centred on
+        // the page whatever shape the two images turn out to be.
+        columns: [
+          logo ? { image: logo, fit: [120, 38], width: 130 } : { text: '', width: logoRight ? 130 : 0 },
+          { ...heading, width: '*', margin: [12, 0, 12, 0] },
+          logoRight
+            ? { image: logoRight, fit: [120, 38], width: 130, alignment: 'right' }
+            : { text: '', width: logo ? 130 : 0 },
+        ],
+        columnGap: 0,
         margin: [0, 0, 0, 6],
       },
       {

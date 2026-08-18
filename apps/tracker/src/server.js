@@ -910,7 +910,8 @@ export async function createApp(env = process.env, overrides = {}) {
         // Short codes: the attention table's register column is narrow, and
         // "CTS Recommendation" wrapped to three lines in it.
         registerNames: new Map(REGISTERS.map((r) => [r.id, r.short])),
-        logo: await store.getSetting('report_logo'),
+        logo: (await store.getSetting('report_logo')) || null,
+        logoRight: (await store.getSetting('report_logo_right')) || null,
         generatedBy: req.user?.name ?? null,
         // A restricted account's report must say what it covers, or it reads as
         // the whole department's position when it is only part of it.
@@ -930,10 +931,31 @@ export async function createApp(env = process.env, overrides = {}) {
     }
   });
 
-  /** The logo printed on the report — uploaded once by an admin. */
+  /**
+   * The two logos printed on everything that leaves the app.
+   *
+   * Two, because these documents carry both the contractor's mark and the
+   * client's — SANKYU at the left, Yasref at the right, as the team's own
+   * workbooks do.
+   *
+   * They are uploaded rather than shipped in the repository. Nobody's trademark
+   * belongs in somebody else's source tree, the files here are then whatever the
+   * brand team actually issued rather than something redrawn from a screenshot,
+   * and the next site to use this app supplies its own two without a code change.
+   */
+  const LOGO_SLOTS = { left: 'report_logo', right: 'report_logo_right' };
+
+  const readLogos = async () => ({
+    left: (await store.getSetting(LOGO_SLOTS.left)) || null,
+    right: (await store.getSetting(LOGO_SLOTS.right)) || null,
+  });
+
   app.get('/api/report/logo', requireAccess('read'), async (_req, res, next) => {
     try {
-      res.json({ logo: await store.getSetting('report_logo') });
+      const logos = await readLogos();
+      // `logo` repeats the left slot so a browser still running the previous
+      // build, which knows only about one, keeps working until it reloads.
+      res.json({ ...logos, logo: logos.left });
     } catch (error) {
       next(error);
     }
@@ -941,14 +963,16 @@ export async function createApp(env = process.env, overrides = {}) {
 
   app.put('/api/report/logo', requireAccess('manage'), async (req, res, next) => {
     try {
+      const slot = req.body?.slot === 'right' ? 'right' : 'left';
+      const key = LOGO_SLOTS[slot];
       const logo = req.body?.logo;
 
       if (logo === null || logo === '') {
-        await store.setSetting('report_logo', '');
-        return res.json({ ok: true, logo: null });
+        await store.setSetting(key, '');
+        return res.json({ ok: true, slot, logo: null });
       }
 
-      // A data URI, so the report needs nothing from the network when it prints.
+      // A data URI, so a report needs nothing from the network when it prints.
       if (typeof logo !== 'string' || !/^data:image\/(png|jpeg|jpg);base64,/.test(logo)) {
         return asError(res, 400, 'Upload a PNG or JPG image.');
       }
@@ -956,8 +980,8 @@ export async function createApp(env = process.env, overrides = {}) {
         return asError(res, 400, 'That image is too large — use one under about 400 KB.');
       }
 
-      await store.setSetting('report_logo', logo);
-      res.json({ ok: true });
+      await store.setSetting(key, logo);
+      res.json({ ok: true, slot });
     } catch (error) {
       next(error);
     }
@@ -1255,7 +1279,7 @@ export async function createApp(env = process.env, overrides = {}) {
         groups.push({ register, records: await store.all(register.id) });
       }
 
-      const buffer = await buildWorkbook(groups);
+      const buffer = await buildWorkbook(groups, await readLogos());
       const stamp = new Date().toISOString().slice(0, 10);
       const name = requested
         ? `${registers[0].name.replace(/\s+/g, '_')}_${stamp}.xlsx`

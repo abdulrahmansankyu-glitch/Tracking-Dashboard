@@ -46,6 +46,10 @@ to that file and nothing else.
 Priority, status, action owner, initiator and due window are all filterable inside
 each register, and the table sorts on any column.
 
+**Enter saves** in the entry drawer, as it does on the sign-in form — except in a
+description or remarks box, where Enter is a new line, and on a date field, where
+the browser's own picker uses it to accept a date.
+
 ---
 
 ## The duty rota
@@ -199,8 +203,14 @@ than replacing `Execution` with `High`.
 ## Excel export
 
 **Export all** produces one workbook: a Summary sheet plus one sheet per register,
-laid out like the Engineering Master file it replaces — a pale header, black text,
-a thin border on every cell, and no row colours.
+laid out like the Engineering Master file it replaces — the two logos across the
+banner row with the title centred between them, then a pale header, black text, a
+thin border on every cell, and no row colours.
+
+The right-hand logo is anchored to the right edge of each sheet's own table
+rather than to a fixed column: every register has a different number of columns
+and different widths, so a fixed index lands mid-table on the wide ones and off
+the end of the narrow ones.
 
 The sheet carries the register's own columns and nothing else. `Tracker Priority`,
 `Tracker Status`, `Tracker Due Date`, `Due State`, `Last Updated` and `Updated By`
@@ -230,8 +240,17 @@ everything overdue or due inside the month. It is built from the same
 `summarise()` output the dashboard reads, so the sheet somebody takes into a
 meeting and the screen somebody is looking at cannot disagree.
 
-An admin uploads the company logo once under **Settings → Report logo**; it is
-stored as a data URI, so the report needs nothing from the network to print.
+**Two logos**, uploaded once under **Settings → Logos**: the contractor's mark at
+the left, the client's at the right, with the heading between them — the
+arrangement the team's own workbooks use. They appear on the PDF report and in
+the banner row of every Excel export.
+
+They are uploaded rather than shipped with the app. Nobody's trademark belongs in
+somebody else's source tree; the file is then whatever the brand team actually
+issued rather than something redrawn from a screenshot; and the next site to use
+this supplies its own two without a code change. Each is stored as a data URI, so
+a report needs nothing from the network to print, and each is embedded once per
+workbook however many sheets it has.
 
 A restricted account's report covers only its own registers and says so on the
 page — otherwise a partial view reads as the whole department's position.
@@ -398,7 +417,7 @@ it uses that instead; the tables are created on boot.
 | `TRACKER_MAIL_FROM` · `TRACKER_GRAPH_*` · `TRACKER_SMTP_*` · `TRACKER_BREVO_API_KEY` · `TRACKER_RESEND_API_KEY` | — | Reminder email — see above |
 
 ```bash
-pnpm --filter @intoto/tracker test     # 62 tests, no database needed
+pnpm --filter @intoto/tracker test     # 74 tests, no database needed
 ```
 
 ---
@@ -504,7 +523,7 @@ src/report.js      the printable Engineering Department Updates sheet
 src/autonumber.js  the PA-YYMM-NN rule for Action Notice document numbers
 src/reminders.js   who is reminded about what, and the digest they receive
 src/mailer.js      Microsoft Graph, SMTP, Brevo or Resend behind one send()
-test/              62 tests over the parts that would fail silently
+test/              74 tests over the parts that would fail silently
 ```
 
 The browser never carries its own copy of the register definitions — it reads them

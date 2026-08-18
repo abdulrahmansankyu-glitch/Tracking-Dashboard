@@ -411,19 +411,111 @@ function widthFor(field) {
   return 20;
 }
 
-function writeRegisterSheet(workbook, register, records) {
+/** A data URI as ExcelJS wants it: raw base64 plus the extension separately. */
+function imageParts(dataUri) {
+  const match = /^data:image\/(png|jpe?g);base64,(.+)$/.exec(String(dataUri ?? ''));
+  if (!match) return null;
+  return { extension: match[1] === 'jpg' ? 'jpeg' : match[1], base64: match[2] };
+}
+
+/**
+ * The banner across the top of every sheet.
+ *
+ * The team's own workbooks carry the contractor's mark at the left, the title
+ * centred, and the client's at the right; an export that looks like the file it
+ * replaces is one people forward rather than reformat.
+ *
+ * The images float over the merged row rather than sitting in cells, because an
+ * Excel image is an overlay in any case — anchoring it to a cell would still not
+ * make the row size itself around it, so the row is given a fixed height instead.
+ */
+const LOGO_HEIGHT = 34;
+const BANNER_ROW_HEIGHT = 42;
+
+/**
+ * Where a column boundary falls, in pixels from the left edge.
+ *
+ * Excel's column width is measured in characters of the default font, which is
+ * roughly seven pixels each plus five of padding. The arithmetic is only needed
+ * to place the right-hand logo: it has to sit at the right edge of a table whose
+ * width differs for every register.
+ */
+function columnOffsets(widths) {
+  const edges = [0];
+  for (const width of widths) edges.push(edges[edges.length - 1] + Math.round(width * 7 + 5));
+  return edges;
+}
+
+/** Turn a pixel offset into the fractional column index ExcelJS anchors to. */
+function columnAt(edges, pixels) {
+  for (let i = 1; i < edges.length; i += 1) {
+    if (edges[i] >= pixels) {
+      const span = edges[i] - edges[i - 1] || 1;
+      return i - 1 + (pixels - edges[i - 1]) / span;
+    }
+  }
+  return edges.length - 1;
+}
+
+/**
+ * Register each logo with the workbook once and reuse its id.
+ *
+ * `addImage` was being called per sheet, so a nine-register export embedded
+ * eighteen copies of two images — with the 400 KB the upload allows, megabytes
+ * of the same two pictures.
+ */
+function registerLogos(workbook, logos = {}) {
+  const ids = {};
+  for (const slot of ['left', 'right']) {
+    const parts = imageParts(logos[slot]);
+    if (parts) ids[slot] = workbook.addImage(parts);
+  }
+  return ids;
+}
+
+function writeBanner(sheet, title, widths, logoIds = {}) {
+  sheet.mergeCells(1, 1, 1, widths.length);
+  const banner = sheet.getCell(1, 1);
+  banner.value = title;
+  banner.font = { bold: true, size: 13 };
+  banner.alignment = { vertical: 'middle', horizontal: 'center' };
+  banner.fill = HEADER_FILL;
+  banner.border = CELL_BORDER;
+  sheet.getRow(1).height = BANNER_ROW_HEIGHT;
+
+  const edges = columnOffsets(widths);
+  const place = (id, width, leftPx) => {
+    sheet.addImage(id, {
+      tl: { col: columnAt(edges, leftPx), row: 0.15 },
+      ext: { width, height: LOGO_HEIGHT },
+      editAs: 'absolute',
+    });
+  };
+
+  if (logoIds.left !== undefined) place(logoIds.left, 118, 6);
+
+  if (logoIds.right !== undefined) {
+    // Anchored from the right edge of the table, which is a different place on
+    // every register — a fixed column index would land mid-table on the wide
+    // ones and off the end of the narrow ones.
+    place(logoIds.right, 96, Math.max(6, edges.at(-1) - 102));
+  }
+}
+
+function writeRegisterSheet(workbook, register, records, logoIds) {
   const sheet = workbook.addWorksheet(register.name, {
     views: [{ state: 'frozen', ySplit: 2 }],
   });
 
-  // Row 1 repeats the banner the team's own files carry, so an exported workbook
-  // looks like the one it replaces.
-  sheet.mergeCells(1, 1, 1, register.fields.length + COMPUTED_COLUMNS.length + 1);
-  const banner = sheet.getCell(1, 1);
-  banner.value = `${register.name} — ${register.description}`;
-  banner.font = { bold: true, size: 13 };
-  banner.alignment = { vertical: 'middle' };
-  sheet.getRow(1).height = 22;
+  const widths = [
+    7,
+    ...register.fields.map((f) => widthFor(f)),
+    ...COMPUTED_COLUMNS.map((c) => c.width),
+  ];
+  // Set before the banner, which measures them to place the right-hand logo.
+  sheet.columns = widths.map((width) => ({ width }));
+
+  writeBanner(sheet, `${register.name} — ${register.description}`, widths, logoIds);
 
   const headers = ['Sl no', ...register.fields.map((f) => f.label), ...COMPUTED_COLUMNS.map((c) => c.header)];
   const headerRow = sheet.getRow(2);
@@ -435,12 +527,6 @@ function writeRegisterSheet(workbook, register, records) {
     cell.border = CELL_BORDER;
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
   });
-
-  sheet.columns = [
-    { width: 7 },
-    ...register.fields.map((f) => ({ width: widthFor(f) })),
-    ...COMPUTED_COLUMNS.map((c) => ({ width: c.width })),
-  ];
 
   records.forEach((record, i) => {
     const values = [
@@ -476,13 +562,18 @@ function writeRegisterSheet(workbook, register, records) {
   return sheet;
 }
 
-function writeSummarySheet(workbook, groups) {
+function writeSummarySheet(workbook, groups, logoIds) {
   const sheet = workbook.addWorksheet('Summary', { views: [{ state: 'frozen', ySplit: 2 }] });
 
-  sheet.mergeCells(1, 1, 1, 7);
-  const banner = sheet.getCell(1, 1);
-  banner.value = `Engineering Activity Tracker — exported ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
-  banner.font = { bold: true, size: 13 };
+  const widths = [24, 10, 10, 12, 15, 12, 14];
+  sheet.columns = widths.map((width) => ({ width }));
+
+  writeBanner(
+    sheet,
+    `Engineering Activity Tracker — exported ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
+    widths,
+    logoIds,
+  );
 
   const headerRow = sheet.getRow(2);
   headerRow.values = ['Register', 'Total', 'Open', 'Overdue', 'Due ≤ 30 days', 'Completed', 'No due date'];
@@ -492,7 +583,6 @@ function writeSummarySheet(workbook, groups) {
     cell.border = CELL_BORDER;
     cell.alignment = { vertical: 'middle', horizontal: 'center' };
   });
-  sheet.columns = [{ width: 24 }, { width: 10 }, { width: 10 }, { width: 12 }, { width: 15 }, { width: 12 }, { width: 14 }];
 
   for (const { register, records } of groups) {
     const open = records.filter((r) => !CLOSED_STATUSES.has(r.status));
@@ -515,13 +605,14 @@ function writeSummarySheet(workbook, groups) {
  * produces the whole master file, Summary first — the same layout the team's
  * Engineering Master file already uses.
  */
-export async function buildWorkbook(groups) {
+export async function buildWorkbook(groups, logos = {}) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Engineering Activity Tracker';
   workbook.created = new Date();
 
-  if (groups.length > 1) writeSummarySheet(workbook, groups);
-  for (const { register, records } of groups) writeRegisterSheet(workbook, register, records);
+  const logoIds = registerLogos(workbook, logos);
+  if (groups.length > 1) writeSummarySheet(workbook, groups, logoIds);
+  for (const { register, records } of groups) writeRegisterSheet(workbook, register, records, logoIds);
 
   return workbook.xlsx.writeBuffer();
 }

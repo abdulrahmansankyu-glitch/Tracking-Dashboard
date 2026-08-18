@@ -1843,3 +1843,72 @@ test('a rota save from a stale page is refused rather than overwriting a colleag
     assert.ok(logged.activity.some((entry) => entry.action === 'rota'));
   });
 });
+
+// ------------------------------------------------------------------ logos ---
+
+const PIXEL_PNG =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+test('both logos are stored, served and printed on the report', async () => {
+  await withAdmin(async ({ asAdmin }) => {
+    const admin = asAdmin();
+
+    assert.equal((await admin.put('/api/report/logo', { slot: 'left', logo: PIXEL_PNG })).status, 200);
+    assert.equal((await admin.put('/api/report/logo', { slot: 'right', logo: PIXEL_PNG })).status, 200);
+
+    const stored = await (await admin.get('/api/report/logo')).json();
+    assert.equal(stored.left, PIXEL_PNG);
+    assert.equal(stored.right, PIXEL_PNG);
+    // A browser still running the previous build knows only `logo`; it keeps
+    // working until it reloads rather than losing the logo it had.
+    assert.equal(stored.logo, PIXEL_PNG);
+
+    // An unknown slot is treated as the left one rather than silently writing a
+    // setting nothing ever reads.
+    assert.equal((await admin.put('/api/report/logo', { slot: 'middle', logo: null })).status, 200);
+    assert.equal((await (await admin.get('/api/report/logo')).json()).left, null);
+
+    assert.equal(
+      (await admin.put('/api/report/logo', { slot: 'right', logo: 'not-an-image' })).status,
+      400,
+      'each slot still refuses anything that is not an image data URI',
+    );
+
+    const text = pdfText(Buffer.from(await (await admin.get('/api/report.pdf')).arrayBuffer()));
+    assert.ok(pdfHas(text, 'Engineering Department Updates'));
+  });
+});
+
+test('an export carries the logos once, however many sheets it has', async () => {
+  const groups = REGISTERS.map((register) => ({ register, records: [] }));
+  const buffer = await buildWorkbook(groups, { left: PIXEL_PNG, right: PIXEL_PNG });
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+
+  // Every sheet shows both, and the right-hand one is anchored near that
+  // sheet's own last column rather than a fixed index — each register has a
+  // different number of columns and different widths.
+  for (const sheet of workbook.worksheets) {
+    const images = sheet.getImages();
+    assert.equal(images.length, 2, `${sheet.name} shows both logos`);
+    const columns = images.map((i) => i.range.tl.nativeCol);
+    assert.equal(columns[0], 0, `${sheet.name}: the left logo starts at the first column`);
+    assert.ok(
+      columns[1] >= sheet.columnCount - 3,
+      `${sheet.name}: the right logo sits at the right edge (col ${columns[1]} of ${sheet.columnCount})`,
+    );
+  }
+
+  // `addImage` was being called per sheet, so a nine-register export embedded
+  // eighteen copies of the same two pictures.
+  assert.equal(workbook.model.media.length, 2, 'each image is embedded once for the whole workbook');
+});
+
+test('an export with no logos is still a valid workbook', async () => {
+  const buffer = await buildWorkbook([{ register: getRegister('iws'), records: [] }]);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  assert.equal(workbook.worksheets[0].getImages().length, 0);
+  assert.equal(workbook.model.media.length, 0);
+});

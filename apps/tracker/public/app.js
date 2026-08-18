@@ -100,7 +100,7 @@ const state = {
   confirmToken: '', // password re-confirmation for Settings — memory only, on purpose
   confirmExpires: 0,
   confirmPrompt: null, // { error } while asking
-  logo: null, // the report logo, once loaded
+  logos: { left: null, right: null }, // the two brand logos, once loaded
   reminders: null, // { config, mail, runs, weekdays } for admins
   reminderPreview: null, // who today's digest would go to, before sending
   reminderTest: null, // { ok, message } from the last test send — kept on screen
@@ -1369,6 +1369,71 @@ function openNew(registerId) {
     .catch(() => {});
 }
 
+/**
+ * One upload slot, used twice.
+ *
+ * The logos are uploaded rather than shipped with the app: nobody's trademark
+ * belongs in somebody else's source tree, the file is then whatever the brand
+ * team actually issued rather than something redrawn from a screenshot, and the
+ * next site to use this supplies its own without a code change.
+ */
+function logoSlot(slot, label) {
+  const current = state.logos?.[slot] ?? null;
+  const inputId = `logo-input-${slot}`;
+
+  const put = async (logo) => {
+    try {
+      await api('/api/report/logo', { method: 'PUT', json: { slot, logo } });
+      state.logos = { ...(state.logos ?? {}), [slot]: logo };
+      toast(logo ? 'Saved — it is on the next export and report.' : 'Removed.');
+      render();
+    } catch (error) {
+      toast(error.message);
+    }
+  };
+
+  return h(
+    'div',
+    { style: 'flex: 1 1 260px; min-width: 240px' },
+    h('div', { class: 'nav-label', style: 'padding-left: 0' }, label),
+    h(
+      'div',
+      {
+        // A fixed frame so an empty slot and a filled one are the same size and
+        // the two sit level, whatever shape the images are.
+        style:
+          'height: 64px; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--line); border-radius: 6px; margin-bottom: 10px; padding: 6px',
+      },
+      current
+        ? h('img', { src: current, alt: `${label} logo`, style: 'max-height: 50px; max-width: 100%' })
+        : h('span', { class: 'hint' }, 'None yet'),
+    ),
+    h('input', {
+      type: 'file',
+      id: inputId,
+      accept: 'image/png,image/jpeg',
+      style: 'display: none',
+      onchange: (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => put(reader.result);
+        reader.readAsDataURL(file);
+      },
+    }),
+    h(
+      'div',
+      { class: 'toolbar' },
+      h(
+        'button',
+        { class: 'btn primary', type: 'button', onclick: () => $(`#${inputId}`).click() },
+        current ? 'Replace' : 'Upload',
+      ),
+      current ? h('button', { class: 'btn', type: 'button', onclick: () => put(null) }, 'Remove') : null,
+    ),
+  );
+}
+
 const AUTO_REF_HINTS = {
   auto: 'Numbered automatically — the serial restarts each month. Type over it to use your own.',
   manual: 'Using the number you typed instead of the automatic one.',
@@ -1481,6 +1546,25 @@ function renderDrawer() {
 
   const extraKeys = Object.keys(record.data ?? {}).filter((key) => key.startsWith('extra:'));
 
+  /**
+   * Enter saves, the way it does on the sign-in form.
+   *
+   * The drawer is a stack of inputs rather than a `<form>`, so Enter did
+   * nothing at all — somebody filling in a notice had to reach for the mouse
+   * for the one action they were already finished with.
+   *
+   * Not in a textarea: Enter there is a new line, and Description and Remarks
+   * are the fields most likely to want one. Not on a date input either, where
+   * the browser's own picker uses Enter to accept a date.
+   */
+  const submitOnEnter = (event) => {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    const el = event.target;
+    if (el.tagName === 'TEXTAREA' || el.type === 'date') return;
+    event.preventDefault();
+    save();
+  };
+
   const save = async () => {
     try {
       const payload = isNew ? { ...(record.data ?? {}), ...draft } : draft;
@@ -1555,7 +1639,7 @@ function renderDrawer() {
 
       h(
         'div',
-        { class: 'body' },
+        { class: 'body', onkeydown: submitOnEnter },
         !isNew &&
           h(
             'p',
@@ -2533,7 +2617,8 @@ function renderSettings() {
   if (state.users === null) {
     api('/api/report/logo')
       .then((data) => {
-        state.logo = data.logo || null;
+        state.logos = { left: data.left ?? data.logo ?? null, right: data.right ?? null };
+        render();
       })
       .catch(() => {});
 
@@ -2849,73 +2934,32 @@ function renderSettings() {
       h(
         'header',
         null,
-        h('h2', null, 'Report logo'),
-        h('span', { class: 'hint' }, 'printed on the PDF report'),
+        h('h2', null, 'Logos'),
+        h('span', { class: 'hint' }, 'on every export and report'),
       ),
       h(
         'p',
-        { class: 'hint', style: 'margin: -6px 0 12px' },
-        'A PNG or JPG under about 400 KB, ideally a wide image on a transparent or white background. It appears beside the "Engineering Department Updates" heading.',
+        { class: 'hint', style: 'margin: -6px 0 14px' },
+        'PNG or JPG, under about 400 KB each, ideally wide with a transparent or white background. They appear at the top of every Excel export and on the PDF report — the left one first, the right one opposite it, with the title between.',
       ),
-      state.logo &&
-        h('img', {
-          src: state.logo,
-          alt: 'Current report logo',
-          style: 'max-height: 46px; max-width: 220px; margin-bottom: 12px; display: block',
-        }),
       h(
         'div',
-        { class: 'toolbar' },
-        h('input', {
-          type: 'file',
-          id: 'logo-input',
-          accept: 'image/png,image/jpeg',
-          style: 'display: none',
-          onchange: async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = async () => {
-              try {
-                await api('/api/report/logo', { method: 'PUT', json: { logo: reader.result } });
-                state.logo = reader.result;
-                toast('Logo saved — it will appear on the next report.');
-                render();
-              } catch (error) {
-                toast(error.message);
-              }
-            };
-            reader.readAsDataURL(file);
-          },
-        }),
-        h(
-          'button',
-          { class: 'btn primary', type: 'button', onclick: () => $('#logo-input').click() },
-          state.logo ? 'Replace logo' : 'Upload logo',
-        ),
-        state.logo &&
-          h(
-            'button',
-            {
-              class: 'btn',
-              type: 'button',
-              onclick: async () => {
-                try {
-                  await api('/api/report/logo', { method: 'PUT', json: { logo: null } });
-                  state.logo = null;
-                  toast('Logo removed.');
-                  render();
-                } catch (error) {
-                  toast(error.message);
-                }
-              },
-            },
-            'Remove',
-          ),
+        { style: 'display: flex; gap: 28px; flex-wrap: wrap' },
+        logoSlot('left', 'Left — your company'),
+        logoSlot('right', 'Right — the client'),
+      ),
+      h(
+        'div',
+        { class: 'toolbar', style: 'margin-top: 16px' },
         h(
           'button',
           { class: 'btn ghost', type: 'button', onclick: () => download('/api/report.pdf') },
           'Preview the report',
+        ),
+        h(
+          'button',
+          { class: 'btn ghost', type: 'button', onclick: () => download('/api/export') },
+          'Preview an export',
         ),
       ),
     ),
