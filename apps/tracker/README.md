@@ -220,6 +220,21 @@ and Description — the column people actually read — was cramped into two wra
 lines beside them, and the total came to more than a page, so printing began with
 dragging every column by hand.
 
+**Dates are written as dates**, not as the text they happened to be stored as.
+The same ETC column held `16/08/2026`, `25-08-2026` and `2026-09-03` at once —
+imported rows kept the spelling their own sheet used, typed ones were ISO — so
+the column could not be read at a glance, sorted, or filtered by date. Every date
+column now carries a real Excel date shown as `mm/dd/yyyy`, set in one place in
+[`src/excel.js`](src/excel.js); the printed report and the reminder emails share
+one formatter with it, so the three cannot drift apart.
+
+Worth knowing: the workbooks this replaces were written day/month/year
+(`16/08/2026` meaning 16 August), and the two conventions disagree for any day up
+to the twelfth. Changing `DATE_FORMAT` to `dd/mm/yyyy` switches back.
+
+A phrase is not a date and is left exactly as written — `Next sulfur Shutdown`
+stays text, with no date format on it, since one would render it blank.
+
 An empty column is sized to its own heading and no more. When a register is still
 too wide, its wrapping columns give way first, down to a floor: a description
 reflows onto another line, whereas a date or a tag would simply be cut off. That
@@ -432,7 +447,7 @@ it uses that instead; the tables are created on boot.
 | `TRACKER_MAIL_FROM` · `TRACKER_GRAPH_*` · `TRACKER_SMTP_*` · `TRACKER_BREVO_API_KEY` · `TRACKER_RESEND_API_KEY` | — | Reminder email — see above |
 
 ```bash
-pnpm --filter @intoto/tracker test     # 76 tests, no database needed
+pnpm --filter @intoto/tracker test     # 79 tests, no database needed
 ```
 
 ---
@@ -538,7 +553,7 @@ src/report.js      the printable Engineering Department Updates sheet
 src/autonumber.js  the PA-YYMM-NN rule for Action Notice document numbers
 src/reminders.js   who is reminded about what, and the digest they receive
 src/mailer.js      Microsoft Graph, SMTP, Brevo or Resend behind one send()
-test/              76 tests over the parts that would fail silently
+test/              79 tests over the parts that would fail silently
 ```
 
 The browser never carries its own copy of the register definitions — it reads them

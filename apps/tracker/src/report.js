@@ -14,7 +14,7 @@
 
 import PdfPrinter from 'pdfmake';
 
-import { CLOSED_STATUSES, DUE_SOON_DAYS } from './registers.js';
+import { CLOSED_STATUSES, DUE_SOON_DAYS, formatDisplayDate } from './registers.js';
 
 const FONTS = {
   Helvetica: {
@@ -32,11 +32,10 @@ const ACCENT = '#1c5cab';
 const CRITICAL = '#c0392b';
 const WARNING = '#8a5a06';
 
-const asDate = (iso) => (iso ? String(iso).slice(0, 10) : '—');
+const asDate = (iso) => (iso ? formatDisplayDate(String(iso).slice(0, 10)) : '—');
 
 function formatToday() {
-  const now = new Date();
-  return now.toISOString().slice(0, 10);
+  return formatDisplayDate(new Date().toISOString().slice(0, 10));
 }
 
 /** The six headline figures, as a row of boxed cells. */

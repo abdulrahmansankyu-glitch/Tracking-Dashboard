@@ -27,6 +27,7 @@ import {
   REGISTERS,
   deriveRecord,
   dueState,
+  formatDisplayDate,
   getRegister,
   normalisePriority,
   normaliseStatus,
@@ -1988,4 +1989,63 @@ test('a wide register gives up description width rather than printing unreadably
   const findings = sheet.getColumn(9).width;
   assert.ok(findings >= 22, 'but never squeezed below the point where wrapping stops helping');
   assert.ok(findings < natural, 'the wrapping columns are what give way');
+});
+
+test('every date in an export is a real date in one format', async () => {
+  const register = getRegister('action-notice');
+  // The same ETC column in the team's own file held all three of these at once:
+  // imported rows kept the spelling their sheet used, typed ones were ISO. The
+  // column could not be read at a glance, sorted, or filtered by date.
+  const records = [
+    deriveAll(register, { documentNo: 'A', issuedDate: '2026-07-20', etc: '16/08/2026' }),
+    deriveAll(register, { documentNo: 'B', issuedDate: '2026-07-28', etc: 'Next sulfur Shutdown' }),
+    deriveAll(register, { documentNo: 'C', issuedDate: '2026-08-17', etc: '25-08-2026' }),
+    deriveAll(register, { documentNo: 'D', issuedDate: '2026-07-13', etc: '2026-09-03' }),
+  ];
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(await buildWorkbook([{ register, records }]));
+  const sheet = workbook.worksheets[0];
+
+  let etcColumn = 0;
+  sheet.getRow(2).eachCell((cell, i) => {
+    if (String(cell.value) === 'ETC') etcColumn = i;
+  });
+
+  const cellAt = (row) => sheet.getRow(row).getCell(etcColumn);
+  const iso = (cell) => cell.value.toISOString().slice(0, 10);
+
+  // All three spellings land as the same kind of thing: a date Excel understands.
+  assert.equal(iso(cellAt(3)), '2026-08-16');
+  assert.equal(iso(cellAt(5)), '2026-08-25');
+  assert.equal(iso(cellAt(6)), '2026-09-03');
+  for (const row of [3, 5, 6]) assert.equal(cellAt(row).numFmt, 'mm/dd/yyyy');
+
+  // A phrase is not a date. It stays text, and carries no date format — one
+  // would render it as blank.
+  assert.equal(cellAt(4).value, 'Next sulfur Shutdown');
+  assert.equal(cellAt(4).numFmt, undefined);
+});
+
+test('an exported date survives being re-imported, whatever the server timezone', async () => {
+  // Writing UTC midnight and reading it back through a timezone-sensitive path
+  // is the classic way a date arrives a day early.
+  const register = getRegister('action-notice');
+  const records = [deriveAll(register, { documentNo: 'A', issuedDate: '2026-01-01', etc: '16/08/2026' })];
+
+  const { sheets } = await inspectWorkbook(await buildWorkbook([{ register, records }]));
+  const [row] = sheets[0].sample;
+
+  assert.equal(row.issuedDate, '2026-01-01');
+  // And the round trip normalises what was stored: dd/mm/yyyy comes back ISO.
+  assert.equal(row.etc, '2026-08-16');
+});
+
+test('one formatter decides how a date reads, everywhere', () => {
+  assert.equal(formatDisplayDate('2026-08-16'), '08/16/2026');
+  assert.equal(formatDisplayDate('2026-09-03'), '09/03/2026');
+  // Notes are not dates and are passed through untouched.
+  assert.equal(formatDisplayDate('Next Shutdown'), 'Next Shutdown');
+  assert.equal(formatDisplayDate(''), '');
+  assert.equal(formatDisplayDate(null), '');
 });

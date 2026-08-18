@@ -20,6 +20,7 @@ import {
   DUE_SOON_DAYS,
   REGISTER_BY_ID,
   daysUntil,
+  formatDisplayDate,
   normaliseKey,
   todayIso,
 } from './registers.js';
@@ -388,7 +389,7 @@ ${cell(
 ${cell(
   `<span style="color:${colour};font-weight:700">${escape(
     duePhrase(item.days),
-  )}</span><br><span style="color:${MUTED};font-size:11px;white-space:nowrap">${escape(r.dueDate ?? '')}</span>`,
+  )}</span><br><span style="color:${MUTED};font-size:11px;white-space:nowrap">${escape(formatDisplayDate(r.dueDate ?? ''))}</span>`,
 )}
 </tr>`;
     })
@@ -457,7 +458,7 @@ export function renderDigest({ recipient, items, counts, config, today }) {
 <tr><td style="height:4px;background:${ACCENT};font-size:0;line-height:0">&nbsp;</td></tr>
 <tr><td style="padding:24px 26px 0">
 <h1 style="margin:0;font:700 20px/1.25 Arial,sans-serif;color:${INK}">Engineering Department Updates</h1>
-<p style="margin:5px 0 0;font:400 13px/1.5 Arial,sans-serif;color:${MUTED}">Solid Handling Plant &middot; DCU — status as at ${escape(today)}</p>
+<p style="margin:5px 0 0;font:400 13px/1.5 Arial,sans-serif;color:${MUTED}">Solid Handling Plant &middot; DCU — status as at ${escape(formatDisplayDate(today))}</p>
 </td></tr>
 <tr><td style="padding:20px 26px 0;font:400 14px/1.6 Arial,sans-serif;color:${INK}">
 <p style="margin:0 0 16px">${greeting}</p>
@@ -497,7 +498,7 @@ Sent automatically by the Engineering Activity Tracker.
           (i) =>
             `  - [${registerShort(i.record.register)}] ${i.record.ref ?? '—'} — ${
               i.record.title ?? '—'
-            } (${duePhrase(i.days)}, ${i.record.dueDate}) — ${i.record.actionBy ?? 'Unassigned'}`,
+            } (${duePhrase(i.days)}, ${formatDisplayDate(i.record.dueDate)}) — ${i.record.actionBy ?? 'Unassigned'}`,
         )
         .join('\n');
       const more =
@@ -510,7 +511,7 @@ Sent automatically by the Engineering Activity Tracker.
 
   const text = [
     'ENGINEERING DEPARTMENT UPDATES',
-    `Solid Handling Plant / DCU — status as at ${today}`,
+    `Solid Handling Plant / DCU — status as at ${formatDisplayDate(today)}`,
     '',
     recipient.name ? `Hello ${recipient.name},` : 'Hello,',
     '',

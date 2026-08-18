@@ -695,6 +695,23 @@ export function daysUntil(iso, from = todayIso()) {
   return Math.round((b - a) / 86400000);
 }
 
+/**
+ * A date as the team reads it: month/day/year.
+ *
+ * Dates are stored and compared as `YYYY-MM-DD`, which sorts correctly and is
+ * unambiguous, and turned into this only at the moment of display. One function
+ * so the spreadsheet, the printed report and the reminder emails cannot drift
+ * into three different conventions.
+ *
+ * Anything that is not a plain date — `Next Shutdown`, `SEP` — is passed
+ * through untouched, because it is a note rather than a date.
+ */
+export function formatDisplayDate(value) {
+  const raw = String(value ?? '');
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  return match ? `${match[2]}/${match[3]}/${match[1]}` : raw;
+}
+
 /** The window the team called "near one month or less". */
 export const DUE_SOON_DAYS = 30;
 

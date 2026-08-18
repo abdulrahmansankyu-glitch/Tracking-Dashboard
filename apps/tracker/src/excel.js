@@ -380,6 +380,20 @@ export async function readSheet(buffer, sheetName, registerId) {
 const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCE6F1' } };
 const HEADER_FONT = { bold: true, color: { argb: 'FF000000' }, size: 11 };
 
+/**
+ * How every date in an export is shown.
+ *
+ * Month/day/year, as the team asked for. It is a display format only — the cell
+ * holds a real date, so Excel sorts and filters it correctly whatever this says,
+ * and changing this one string changes every date in every export.
+ *
+ * Worth knowing before changing it: the workbooks this replaces were written
+ * day/month/year (`16/08/2026` meaning 16 August), so the two conventions
+ * disagree for any day of the month up to the twelfth. `dd/mm/yyyy` is the
+ * switch back.
+ */
+const DATE_FORMAT = 'mm/dd/yyyy';
+
 const THIN = { style: 'thin', color: { argb: 'FFB7BEC8' } };
 const CELL_BORDER = { top: THIN, left: THIN, bottom: THIN, right: THIN };
 
@@ -646,17 +660,40 @@ function writeRegisterSheet(workbook, register, records, logoIds) {
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
   });
 
+  const dateColumns = new Set(
+    register.fields.map((f, i) => (f.type === 'date' ? i + 2 : 0)).filter(Boolean),
+  );
+
   records.forEach((record, i) => {
     const values = [
       i + 1,
       ...register.fields.map((f) => {
         const value = record.data?.[f.key];
-        return value === undefined || value === null ? '' : value;
+        if (value === undefined || value === null || value === '') return '';
+        // A date column is written as a real date, not as whatever text it was
+        // stored as. The same ETC column held "16/08/2026", "25-08-2026" and
+        // "2026-09-03" at once — imported rows kept the spelling their sheet
+        // used, typed ones were ISO — so the column could not be read at a
+        // glance, sorted, or filtered by date.
+        if (f.type === 'date') {
+          const iso = toDateOnly(value);
+          // A phrase is not a date and is left exactly as written. "Next sulfur
+          // Shutdown" is a real, deliberate entry.
+          return iso ? new Date(`${iso}T00:00:00Z`) : value;
+        }
+        return value;
       }),
       ...COMPUTED_COLUMNS.map((c) => c.value(record)),
     ];
     const row = sheet.addRow(values);
     row.alignment = { vertical: 'top', wrapText: true };
+
+    // Applied per cell rather than per column: the cells holding a phrase must
+    // stay text, and a date format on them would show nothing at all.
+    for (const column of dateColumns) {
+      const cell = row.getCell(column);
+      if (cell.value instanceof Date) cell.numFmt = DATE_FORMAT;
+    }
 
     // Rows are left unfilled on purpose.
     //
