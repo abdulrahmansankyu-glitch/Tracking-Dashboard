@@ -60,6 +60,11 @@ import {
 import { createApp, summarise } from '../src/server.js';
 import { applyQuery, toApi, toRow } from '../src/store.js';
 
+/** A stored record as the exporter sees one: derived fields plus its own data. */
+function deriveAll(register, data) {
+  return { ...deriveRecord(register, data), data };
+}
+
 /** Build a worksheet shaped like the team's files: banner row, then headers. */
 async function sheetFrom(rows, { name = 'Sheet1', startColumn = 1 } = {}) {
   const workbook = new ExcelJS.Workbook();
@@ -1911,4 +1916,76 @@ test('an export with no logos is still a valid workbook', async () => {
   await workbook.xlsx.load(buffer);
   assert.equal(workbook.worksheets[0].getImages().length, 0);
   assert.equal(workbook.model.media.length, 0);
+});
+
+test('export columns are sized to their contents, and the sheet is set up to print', async () => {
+  const register = getRegister('action-notice');
+  const records = [
+    deriveAll(register, {
+      documentNo: 'PA-2608-24',
+      description: 'Link conveyor of diverter chute , liner plate installation & coating',
+      location: '178-508 B',
+      initiator: 'Rehan',
+      etc: '2026-08-16',
+      actionBy: 'Maintenance',
+      status: 'In Progress',
+    }),
+  ];
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(await buildWorkbook([{ register, records }]));
+  const sheet = workbook.worksheets[0];
+
+  const width = (label) => {
+    const index = [];
+    sheet.getRow(2).eachCell((cell, i) => index.push([String(cell.value), i]));
+    const found = index.find(([name]) => name === label);
+    return sheet.getColumn(found[1]).width;
+  };
+
+  // Remarks is untouched in this record, so it needs room for its heading and
+  // nothing more. It used to take 24 characters while sitting empty, beside a
+  // Description cramped into two wrapped lines.
+  assert.ok(width('Remarks') <= 12, `empty Remarks stayed narrow (${width('Remarks')})`);
+  assert.ok(width('Description') > width('Remarks') * 2, 'the column people read gets the room');
+  assert.ok(width('Status') >= 'In Progress'.length, 'a filled column fits its longest value');
+
+  // Fit to one page across, and as many pages down as the rows need. Both set
+  // to 1 would squeeze eight hundred rows onto one unreadable page.
+  assert.equal(sheet.pageSetup.fitToPage, true);
+  assert.equal(sheet.pageSetup.fitToWidth, 1);
+  assert.equal(sheet.pageSetup.fitToHeight, 0);
+  assert.equal(sheet.pageSetup.orientation, 'landscape');
+  assert.equal(sheet.pageSetup.printTitlesRow, '1:2', 'the heading repeats on every page');
+});
+
+test('a wide register gives up description width rather than printing unreadably', async () => {
+  // QC has seventeen columns including two long-text ones. Left at their
+  // natural widths the sheet printed at 43% — too small to read on paper.
+  const register = getRegister('qc');
+  const long = 'I) STATOR LIP SEAL DAMAGED, II) RELEASE AGENT ROLLER GUIDE BAR SUPPORTS BENT, III) DISCHARGE SCRAPPER DAMAGED';
+  const records = Array.from({ length: 5 }, (_, i) =>
+    deriveAll(register, {
+      workOrderNo: `83000054761${i}`,
+      equipmentTag: '162-S-0116',
+      auditFindings: long,
+      workDetail: long,
+      actionStatus: 'To be attend',
+    }),
+  );
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(await buildWorkbook([{ register, records }]));
+  const sheet = workbook.worksheets[0];
+
+  const total = sheet.columns.reduce((sum, c) => sum + (c.width ?? 0), 0);
+  const natural = 52 * 2; // both long-text columns at their maximum
+  assert.ok(
+    total < 320,
+    `the sheet is pulled back towards a printable width (${total.toFixed(0)} chars)`,
+  );
+
+  const findings = sheet.getColumn(9).width;
+  assert.ok(findings >= 22, 'but never squeezed below the point where wrapping stops helping');
+  assert.ok(findings < natural, 'the wrapping columns are what give way');
 });

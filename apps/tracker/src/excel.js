@@ -404,11 +404,97 @@ const COMPUTED_COLUMNS = [
   },
 ];
 
-function widthFor(field) {
-  if (field.type === 'longtext') return 46;
-  if (field.type === 'date') return 14;
-  if (field.type === 'number' || field.type === 'percent') return 12;
-  return 20;
+/**
+ * How wide a column is allowed to get, by the kind of thing in it.
+ *
+ * `min` is the floor even for an empty column — enough for its own heading to
+ * be readable, since a column nobody has filled in yet still has to be findable
+ * when they come to fill it.
+ */
+const WIDTH_LIMITS = {
+  longtext: { min: 24, max: 52 },
+  date: { min: 11, max: 14 },
+  number: { min: 8, max: 12 },
+  percent: { min: 8, max: 12 },
+  select: { min: 10, max: 18 },
+  text: { min: 10, max: 30 },
+};
+
+/**
+ * Size every column to what is actually in it.
+ *
+ * Fixed widths meant Priority, Status and Remarks took their full allowance
+ * while sitting empty, and Description — the column people actually read — was
+ * cramped into two wrapped lines beside them. Worse, the total came to more
+ * than a page, so printing meant dragging every column by hand first.
+ *
+ * A long-text column is measured against its longest *line* rather than its
+ * whole value, because it wraps: a 400-character description does not want a
+ * 400-character column, it wants a sensible one and three rows of height.
+ */
+/**
+ * Roughly how many characters fit across a landscape A4 page at a scale that is
+ * still readable — about 70%, below which 9pt body text stops being worth
+ * printing.
+ *
+ * Excel's fit-to-one-page-wide will scale by whatever it takes, however small,
+ * so a wide register left alone prints at 43% and nobody can read it. Keeping
+ * the natural width near this budget keeps the scaling it has to apply modest.
+ */
+const PRINT_WIDTH_BUDGET = 210;
+
+/** The narrowest a wrapping column may be squeezed to before it stops helping. */
+const LONGTEXT_FLOOR = 22;
+
+/**
+ * Bring an over-wide sheet back towards the budget by narrowing its wrapping
+ * columns, which are the only ones that can lose width without losing content —
+ * a description reflows onto another line, a date or a tag simply gets cut off.
+ *
+ * A register can still exceed the budget afterwards. QC has seventeen columns
+ * including two long-text ones, and no amount of reflowing makes that a
+ * comfortable single page; it just prints smaller, which is honest.
+ */
+function fitWidths(widths, types) {
+  const total = widths.reduce((sum, w) => sum + w, 0);
+  if (total <= PRINT_WIDTH_BUDGET) return widths;
+
+  const flexible = types
+    .map((type, i) => (type === 'longtext' ? i : -1))
+    .filter((i) => i >= 0 && widths[i] > LONGTEXT_FLOOR);
+  if (!flexible.length) return widths;
+
+  const slack = flexible.reduce((sum, i) => sum + widths[i] - LONGTEXT_FLOOR, 0);
+  const needed = Math.min(slack, total - PRINT_WIDTH_BUDGET);
+
+  const out = [...widths];
+  for (const i of flexible) {
+    const share = (widths[i] - LONGTEXT_FLOOR) / slack;
+    out[i] = Math.round(widths[i] - needed * share);
+  }
+  return out;
+}
+
+function measureColumn(header, values, type) {
+  const limits = WIDTH_LIMITS[type] ?? WIDTH_LIMITS.text;
+  // Two characters of breathing room, plus two more for the filter arrow the
+  // header row carries — without it the last word of a heading sits under it.
+  const headerWidth = String(header ?? '').length + 4;
+
+  let content = 0;
+  for (const value of values) {
+    const text = value === null || value === undefined ? '' : String(value);
+    if (!text) continue;
+    content = Math.max(content, type === 'longtext' ? Math.min(text.length, limits.max) : text.length);
+  }
+
+  // An empty column is sized to its own heading and no more. The type minimum
+  // is about readability of *content*, and applying it regardless is what left
+  // an untouched Remarks column twenty-four characters wide next to the
+  // Description everybody actually reads.
+  if (!content) return Math.min(limits.max, headerWidth);
+
+  return Math.min(limits.max, Math.max(headerWidth, limits.min, content + 4));
 }
 
 /** A data URI as ExcelJS wants it: raw base64 plus the extension separately. */
@@ -507,17 +593,49 @@ function writeRegisterSheet(workbook, register, records, logoIds) {
     views: [{ state: 'frozen', ySplit: 2 }],
   });
 
-  const widths = [
-    7,
-    ...register.fields.map((f) => widthFor(f)),
-    ...COMPUTED_COLUMNS.map((c) => c.width),
-  ];
+  const headers = ['Sl no', ...register.fields.map((f) => f.label), ...COMPUTED_COLUMNS.map((c) => c.header)];
+
+  const types = ['number', ...register.fields.map((f) => f.type), ...COMPUTED_COLUMNS.map(() => 'number')];
+  const widths = fitWidths(
+    [
+      // The serial column holds a row number and nothing else.
+      Math.max(5, String(records.length).length + 3),
+      ...register.fields.map((f) =>
+        measureColumn(f.label, records.map((r) => r.data?.[f.key]), f.type),
+      ),
+      ...COMPUTED_COLUMNS.map((c) => measureColumn(c.header, records.map(c.value), 'number')),
+    ],
+    types,
+  );
   // Set before the banner, which measures them to place the right-hand logo.
   sheet.columns = widths.map((width) => ({ width }));
 
   writeBanner(sheet, `${register.name} — ${register.description}`, widths, logoIds);
 
-  const headers = ['Sl no', ...register.fields.map((f) => f.label), ...COMPUTED_COLUMNS.map((c) => c.header)];
+  /**
+   * Print setup, so the file arrives ready to print rather than ready to be
+   * reformatted.
+   *
+   * `fitToWidth: 1` with `fitToHeight: 0` is the important pair: Excel scales
+   * the sheet down until it is one page across, and lets it run to as many
+   * pages down as the rows need. Setting both to 1 would squeeze a
+   * eight-hundred-row register onto a single unreadable page.
+   *
+   * Rows 1–2 repeat at the top of every page, so page four still says which
+   * column is which.
+   */
+  sheet.pageSetup = {
+    orientation: 'landscape',
+    paperSize: 9, // A4
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 0,
+    horizontalCentered: true,
+    printTitlesRow: '1:2',
+    margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 },
+  };
+  sheet.headerFooter = { oddFooter: '&L&F — &A&RPage &P of &N' };
+
   const headerRow = sheet.getRow(2);
   headerRow.values = headers;
   headerRow.height = 20;
@@ -567,6 +685,17 @@ function writeSummarySheet(workbook, groups, logoIds) {
 
   const widths = [24, 10, 10, 12, 15, 12, 14];
   sheet.columns = widths.map((width) => ({ width }));
+
+  // One page, always: the Summary is a row per register.
+  sheet.pageSetup = {
+    orientation: 'landscape',
+    paperSize: 9,
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 1,
+    horizontalCentered: true,
+    margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 },
+  };
 
   writeBanner(
     sheet,

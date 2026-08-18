@@ -212,6 +212,21 @@ rather than to a fixed column: every register has a different number of columns
 and different widths, so a fixed index lands mid-table on the wide ones and off
 the end of the narrow ones.
 
+**Columns are sized to what is in them**, and the sheet arrives ready to print:
+landscape, scaled to one page wide, running to as many pages down as the rows
+need, with the banner and headings repeated at the top of each. Fixed widths
+meant Priority, Status and Remarks took their full allowance while sitting empty
+and Description — the column people actually read — was cramped into two wrapped
+lines beside them, and the total came to more than a page, so printing began with
+dragging every column by hand.
+
+An empty column is sized to its own heading and no more. When a register is still
+too wide, its wrapping columns give way first, down to a floor: a description
+reflows onto another line, whereas a date or a tag would simply be cut off. That
+is a mitigation rather than a cure — QC has seventeen columns including two
+long-text ones, and no amount of reflowing makes that a comfortable single page;
+it prints at about half size, which is honest.
+
 The sheet carries the register's own columns and nothing else. `Tracker Priority`,
 `Tracker Status`, `Tracker Due Date`, `Due State`, `Last Updated` and `Updated By`
 used to be appended and were removed at the team's request: an export is a
@@ -417,7 +432,7 @@ it uses that instead; the tables are created on boot.
 | `TRACKER_MAIL_FROM` · `TRACKER_GRAPH_*` · `TRACKER_SMTP_*` · `TRACKER_BREVO_API_KEY` · `TRACKER_RESEND_API_KEY` | — | Reminder email — see above |
 
 ```bash
-pnpm --filter @intoto/tracker test     # 74 tests, no database needed
+pnpm --filter @intoto/tracker test     # 76 tests, no database needed
 ```
 
 ---
@@ -523,7 +538,7 @@ src/report.js      the printable Engineering Department Updates sheet
 src/autonumber.js  the PA-YYMM-NN rule for Action Notice document numbers
 src/reminders.js   who is reminded about what, and the digest they receive
 src/mailer.js      Microsoft Graph, SMTP, Brevo or Resend behind one send()
-test/              74 tests over the parts that would fail silently
+test/              76 tests over the parts that would fail silently
 ```
 
 The browser never carries its own copy of the register definitions — it reads them
