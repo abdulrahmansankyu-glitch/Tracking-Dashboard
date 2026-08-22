@@ -916,6 +916,455 @@ function renderSidebar() {
 
 // --------------------------------------------------------------- dashboard --
 
+// ------------------------------------------------------------- 3D landscape --
+
+/**
+ * The department as one landscape.
+ *
+ * A bar per register, arranged on a floor you can turn: height is how much is
+ * still open on it, colour is the worst state anything on it is in. The point
+ * is the shape rather than the numbers — which register is tall, which is red —
+ * and the exact figures are a click away in the rings underneath.
+ *
+ * Drawn on a canvas with a hand-rolled projection rather than a 3D library: the
+ * app has no build step, and it has to keep working inside the single-file
+ * offline build, where a CDN script would simply not be there.
+ */
+const view3d = {
+  yaw: -0.62,
+  pitch: 0.58,
+  spin: false,
+  frame: 0,
+  drag: null,
+};
+
+const VIEW3D_HOME = { yaw: -0.62, pitch: 0.58 };
+
+/** Read a CSS custom property as real numbers, so the canvas follows the theme. */
+function themeRgb(name, fallback) {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(raw);
+  if (hex) {
+    const v = hex[1].length === 3 ? hex[1].replace(/./g, (c) => c + c) : hex[1];
+    return [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16));
+  }
+  const rgb = raw.match(/-?[\d.]+/g);
+  if (rgb && rgb.length >= 3) return rgb.slice(0, 3).map(Number);
+  return fallback;
+}
+
+const shade = ([r, g, b], factor, alpha = 1) =>
+  `rgba(${Math.round(Math.min(255, r * factor))}, ${Math.round(Math.min(255, g * factor))}, ${Math.round(
+    Math.min(255, b * factor),
+  )}, ${alpha})`;
+
+/** The worst thing happening on a register decides its colour. */
+function landscapeState(row) {
+  if (row.overdue > 0) return 'overdue';
+  if (row.dueSoon > 0) return 'dueSoon';
+  if (row.open > 0) return 'open';
+  return 'clear';
+}
+
+function drawLandscape(canvas, rows) {
+  const ctx = canvas.getContext('2d');
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  if (!width || !height) return;
+
+  canvas.width = Math.round(width * ratio);
+  canvas.height = Math.round(height * ratio);
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const palette = {
+    overdue: themeRgb('--critical', [208, 59, 59]),
+    dueSoon: themeRgb('--warning', [250, 178, 25]),
+    open: themeRgb('--accent', [42, 120, 214]),
+    clear: themeRgb('--line', [195, 194, 183]),
+  };
+  const ink = themeRgb('--ink', [11, 11, 11]);
+  const surface = themeRgb('--raised', [255, 255, 255]);
+  const floor = themeRgb('--line', [195, 194, 183]);
+
+  // A roughly square floor, so eight registers read as a plot of land rather
+  // than a row of bars.
+  const columns = Math.max(1, Math.ceil(Math.sqrt(rows.length)));
+  const gridRows = Math.max(1, Math.ceil(rows.length / columns));
+  const cell = 1;
+  const box = 0.62;
+  const tallest = Math.max(1, ...rows.map((r) => r.open));
+  // Capped so one enormous register does not flatten every other column to a tile.
+  const heightOf = (open) => (open <= 0 ? 0.04 : 0.25 + (open / tallest) * 1.5);
+
+  const { yaw, pitch } = view3d;
+  const cosY = Math.cos(yaw);
+  const sinY = Math.sin(yaw);
+  const cosP = Math.cos(pitch);
+  const sinP = Math.sin(pitch);
+  const originX = (columns * cell) / 2;
+  const originZ = (gridRows * cell) / 2;
+
+  const project = (x, y, z) => {
+    const dx = x - originX;
+    const dz = z - originZ;
+    const rx = dx * cosY - dz * sinY;
+    const rz = dx * sinY + dz * cosY;
+    return { x: rx, y: -(y * cosP + rz * sinP), depth: rz };
+  };
+
+  const pad = (cell - box) / 2;
+
+  // Shortest at the front, tallest at the back.
+  //
+  // In register order a tall column stands in front of a short one and hides it
+  // completely — an empty register vanished behind a six-high neighbour, and
+  // its name pill floated over the wrong column. Sorting by height means every
+  // column is visible from the resting view, which is the whole point of
+  // looking at it as a landscape. It does mean a register moves when its counts
+  // change; turning the floor is the other way to see behind something, and
+  // that is what the drag is for.
+  const placed = [...rows]
+    .sort((a, b) => a.open - b.open || String(a.short).localeCompare(String(b.short)))
+    .map((row, i) => ({
+      row,
+      gx: (i % columns) * cell + pad,
+      gz: Math.floor(i / columns) * cell + pad,
+      h: heightOf(row.open),
+    }));
+
+  // Fit against what is actually drawn — the floor's corners and each column's
+  // own top. Assuming the tallest column at all four corners reserved room for
+  // three towers that are not there, and left the scene small and floating.
+  const probes = [];
+  for (const x of [0, columns * cell]) {
+    for (const z of [0, gridRows * cell]) probes.push(project(x, 0, z));
+  }
+  for (const c of placed) {
+    for (const x of [c.gx, c.gx + box]) {
+      for (const z of [c.gz, c.gz + box]) probes.push(project(x, c.h, z));
+    }
+  }
+  const minX = Math.min(...probes.map((p) => p.x));
+  const maxX = Math.max(...probes.map((p) => p.x));
+  const minY = Math.min(...probes.map((p) => p.y));
+  const maxY = Math.max(...probes.map((p) => p.y));
+  // Headroom at the top for the name pills, which sit above the columns and are
+  // measured in screen pixels rather than world units.
+  const LABEL_ROOM = 26;
+  const scale = Math.min((width - 36) / (maxX - minX || 1), (height - 20 - LABEL_ROOM) / (maxY - minY || 1));
+  const midX = (maxX + minX) / 2;
+  const midY = (maxY + minY) / 2;
+  const toScreen = (p) => ({
+    x: width / 2 + (p.x - midX) * scale,
+    y: (height + LABEL_ROOM) / 2 + (p.y - midY) * scale,
+  });
+
+  const at = (x, y, z) => toScreen(project(x, y, z));
+  const face = (points, fill) => {
+    ctx.beginPath();
+    points.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+  };
+
+  // The floor.
+  face(
+    [at(0, 0, 0), at(columns * cell, 0, 0), at(columns * cell, 0, gridRows * cell), at(0, 0, gridRows * cell)],
+    shade(surface, 1, 0.92),
+  );
+  ctx.strokeStyle = shade(floor, 1, 0.45);
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= columns; i += 1) {
+    const a = at(i * cell, 0, 0);
+    const b = at(i * cell, 0, gridRows * cell);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  for (let i = 0; i <= gridRows; i += 1) {
+    const a = at(0, 0, i * cell);
+    const b = at(columns * cell, 0, i * cell);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+
+  const columnsOut = placed.map((c) => ({
+    ...c,
+    centre: project(c.gx + box / 2, 0, c.gz + box / 2).depth,
+  }));
+
+  // Painter's algorithm: furthest first, so nearer columns overlap them.
+  columnsOut.sort((a, b) => b.centre - a.centre);
+
+  const hits = [];
+  for (const column of columnsOut) {
+    const { gx, gz, h, row } = column;
+    const x1 = gx + box;
+    const z1 = gz + box;
+    const rgb = palette[landscapeState(row)];
+
+    const corners = [
+      [gx, gz],
+      [x1, gz],
+      [x1, z1],
+      [gx, z1],
+    ];
+
+    // All four walls, back to front, then the top — correct for any rotation
+    // without having to work out which two faces are pointing at the camera.
+    const walls = corners
+      .map((corner, i) => {
+        const next = corners[(i + 1) % 4];
+        return {
+          depth: (project(corner[0], 0, corner[1]).depth + project(next[0], 0, next[1]).depth) / 2,
+          quad: [
+            at(corner[0], 0, corner[1]),
+            at(next[0], 0, next[1]),
+            at(next[0], h, next[1]),
+            at(corner[0], h, corner[1]),
+          ],
+          // The two axes are shaded differently, which is what makes a box read
+          // as solid rather than as a flat coloured outline.
+          tone: i % 2 === 0 ? 0.72 : 0.86,
+        };
+      })
+      .sort((a, b) => b.depth - a.depth);
+
+    for (const wall of walls) face(wall.quad, shade(rgb, wall.tone));
+
+    const top = corners.map(([x, z]) => at(x, h, z));
+    face(top, shade(rgb, 1.06));
+    hits.push({ row, top, apex: at(gx + box / 2, h, gz + box / 2) });
+
+    if (row.open > 0) {
+      // The broadest face, not the nearest one: at some angles the nearest wall
+      // is edge-on and the number landed on a sliver.
+      const area = (q) =>
+        Math.abs(
+          q.reduce((sum, p, i) => {
+            const n = q[(i + 1) % q.length];
+            return sum + (p.x * n.y - n.x * p.y);
+          }, 0) / 2,
+        );
+      const front = walls.reduce((best, w) => (area(w.quad) > area(best.quad) ? w : best), walls[0]).quad;
+      const cx = (front[0].x + front[1].x + front[2].x + front[3].x) / 4;
+      const cy = (front[0].y + front[1].y + front[2].y + front[3].y) / 4;
+      ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.fillText(String(row.open), cx, cy);
+    }
+  }
+
+  // Labels last, so a near column never covers the name of the one behind it.
+  //
+  // Short and empty registers sit close together on the floor and their pills
+  // landed on top of each other — EIS over IWS, QC over CTS. Each pill is
+  // lifted until it clears the ones already placed, which reads as a leader
+  // going up rather than as two names fighting for the same spot.
+  ctx.font = '600 10.5px ui-sans-serif, system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const pills = [];
+  const overlaps = (a, b) =>
+    Math.abs(a.x - b.x) < (a.w + b.w) / 2 + 3 && Math.abs(a.y - b.y) < 21;
+
+  for (const hit of hits) {
+    const label = hit.row.short || hit.row.name;
+    const w = ctx.measureText(label).width + 12;
+    let y = hit.apex.y - 13;
+    while (pills.some((p) => overlaps({ x: hit.apex.x, y, w }, p))) y -= 20;
+    pills.push({ x: hit.apex.x, y, w, label, apex: hit.apex });
+  }
+
+  for (const pill of pills) {
+    // A hairline back to the column it belongs to, for the ones that were lifted.
+    if (pill.apex.y - pill.y > 16) {
+      ctx.beginPath();
+      ctx.moveTo(pill.x, pill.y + 9);
+      ctx.lineTo(pill.x, pill.apex.y - 2);
+      ctx.strokeStyle = shade(floor, 1, 0.7);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.roundRect(pill.x - pill.w / 2, pill.y - 9, pill.w, 18, 9);
+    ctx.fillStyle = shade(surface, 1, 0.96);
+    ctx.fill();
+    ctx.strokeStyle = shade(floor, 1, 0.6);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = shade(ink, 1);
+    ctx.fillText(pill.label, pill.x, pill.y);
+  }
+
+  canvas.__hits = hits;
+}
+
+const inside = (point, polygon) => {
+  let hit = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i];
+    const b = polygon[j];
+    if (a.y > point.y !== b.y > point.y && point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) {
+      hit = !hit;
+    }
+  }
+  return hit;
+};
+
+function render3dLandscape(rows) {
+  const canvas = h('canvas', {
+    class: 'landscape',
+    role: 'img',
+    'aria-label': `A bar for each of the ${rows.length} registers. Height is how much is still open on it; colour is the worst state anything on it is in. The same figures are listed below.`,
+  });
+
+  const redraw = () => drawLandscape(canvas, rows);
+
+  // The loop runs only while it is spinning.
+  //
+  // Left running to poll a flag, it woke the browser sixty times a second to
+  // decide to do nothing — on a phone in somebody's pocket that is battery
+  // spent on a still picture. The app re-renders wholesale, so a detached
+  // canvas also ends the loop rather than animating something nobody can see.
+  const step = () => {
+    if (!canvas.isConnected || !view3d.spin) {
+      view3d.frame = 0;
+      return;
+    }
+    if (!view3d.drag) {
+      view3d.yaw += 0.004;
+      redraw();
+    }
+    view3d.frame = requestAnimationFrame(step);
+  };
+
+  const startSpin = () => {
+    cancelAnimationFrame(view3d.frame);
+    view3d.frame = view3d.spin ? requestAnimationFrame(step) : 0;
+  };
+
+  const pointAt = (event) => {
+    const box = canvas.getBoundingClientRect();
+    return { x: event.clientX - box.left, y: event.clientY - box.top };
+  };
+
+  canvas.addEventListener('pointerdown', (event) => {
+    view3d.drag = { x: event.clientX, y: event.clientY, yaw: view3d.yaw, pitch: view3d.pitch, moved: 0 };
+    canvas.setPointerCapture(event.pointerId);
+  });
+
+  canvas.addEventListener('pointermove', (event) => {
+    if (!view3d.drag) return;
+    const dx = event.clientX - view3d.drag.x;
+    const dy = event.clientY - view3d.drag.y;
+    view3d.drag.moved = Math.max(view3d.drag.moved, Math.abs(dx) + Math.abs(dy));
+    view3d.yaw = view3d.drag.yaw + dx * 0.008;
+    // Clamped: past vertical the floor turns inside out, and level with it the
+    // columns collapse into a line.
+    view3d.pitch = Math.min(1.25, Math.max(0.18, view3d.drag.pitch + dy * 0.006));
+    redraw();
+  });
+
+  const release = (event) => {
+    const drag = view3d.drag;
+    view3d.drag = null;
+    if (!drag || drag.moved > 6) return; // a turn, not a tap
+    const point = pointAt(event);
+    // Nearest first, so tapping where two columns overlap opens the one in front.
+    for (const hit of [...(canvas.__hits ?? [])].reverse()) {
+      if (inside(point, hit.top)) return go('register', hit.row.id);
+    }
+  };
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointercancel', () => {
+    view3d.drag = null;
+  });
+
+  // Sized by its container, so it has to be measured after it is on the page.
+  requestAnimationFrame(() => {
+    redraw();
+    startSpin();
+  });
+
+  // Observed rather than listening on `window`: the dashboard re-renders often,
+  // and a window listener per render accumulates for the life of the tab. An
+  // observer is collected with the canvas it watches.
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => canvas.isConnected && redraw()).observe(canvas);
+  }
+
+  const tallest = rows.reduce((best, r) => (r.open > (best?.open ?? -1) ? r : best), null);
+
+  return h(
+    'section',
+    { class: 'card' },
+    h(
+      'header',
+      null,
+      h('h2', null, 'The department, as a landscape'),
+      h(
+        'span',
+        { class: 'hint' },
+        `${rows.length} register${rows.length === 1 ? '' : 's'}${
+          tallest && tallest.open > 0 ? ` · tallest is ${tallest.open} open` : ''
+        }`,
+      ),
+    ),
+    h('div', { class: 'landscape-frame' }, canvas),
+    h(
+      'div',
+      { class: 'toolbar landscape-controls' },
+      h(
+        'button',
+        {
+          class: 'btn sm',
+          type: 'button',
+          onclick: () => {
+            view3d.spin = !view3d.spin;
+            render();
+          },
+          'aria-pressed': String(view3d.spin),
+        },
+        view3d.spin ? 'Stop spinning' : 'Spin',
+      ),
+      h(
+        'button',
+        {
+          class: 'btn sm',
+          type: 'button',
+          onclick: () => {
+            Object.assign(view3d, VIEW3D_HOME);
+            drawLandscape(canvas, rows);
+          },
+        },
+        'Reset view',
+      ),
+      h('span', { class: 'hint' }, 'Drag to look around · click a column to open that register'),
+    ),
+    legend([
+      { label: 'Something overdue', color: COLOR.overdue },
+      { label: 'Due within the month', color: COLOR.dueSoon },
+      { label: 'Open, on track', color: COLOR.later },
+      { label: 'Nothing open', color: 'var(--line)' },
+    ]),
+    h(
+      'p',
+      { class: 'hint', style: 'margin: 2px 0 0' },
+      'Height is how much is still open on that register. Colour is the worst state anything on it is in.',
+    ),
+  );
+}
+
 function renderDashboard() {
   const data = state.dashboard;
   if (!data) return h('div', { class: 'empty' }, h('span', { class: 'spin' }), ' Loading…');
@@ -940,6 +1389,8 @@ function renderDashboard() {
       kpi('Completed', t.completed, 'finished, not cancelled'),
       kpi('Overdue', t.overdue, 'past their due date', t.overdue > 0 ? 'is-critical' : null),
     ),
+
+    render3dLandscape(data.byRegister),
 
     h(
       'section',

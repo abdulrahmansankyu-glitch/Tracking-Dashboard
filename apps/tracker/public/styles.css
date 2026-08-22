@@ -1601,3 +1601,35 @@ th.num {
 .linkish:hover {
   color: var(--ink);
 }
+
+/* The 3D register landscape on the dashboard. A fixed aspect rather than a
+   fixed height, so the floor keeps its shape from a phone to a wide monitor. */
+.landscape-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 8;
+  min-height: 240px;
+  max-height: 420px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, var(--raised), var(--plane));
+  overflow: hidden;
+}
+.landscape {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none; /* the drag rotates the scene rather than scrolling the page */
+}
+.landscape:active {
+  cursor: grabbing;
+}
+.landscape:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.landscape-controls {
+  margin-top: 10px;
+  align-items: center;
+}
